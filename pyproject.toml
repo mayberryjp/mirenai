@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mirenai"
+version = "0.1.0"
+description = "Screening DNS resolver with per-client allow/deny/override policies and a management API"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "bottle>=0.13",
+  "waitress>=3.0",
+  "SQLAlchemy>=2.0",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "dnslib>=0.9.24",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "webtest>=3",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "bandit>=1.7",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["build", "dist"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["dnslib.*", "bottle", "waitress", "webtest"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["mirenai.db", "mirenai.api.app", "mirenai.api.routes.*"]
+disallow_untyped_decorators = false
