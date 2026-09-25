@@ -7,8 +7,10 @@ then build the wire response. All ``dnslib`` interaction is contained here.
 
 from __future__ import annotations
 
+import random
 import time
 from ipaddress import IPv4Address, IPv6Address, ip_address
+from itertools import groupby
 
 from dnslib import AAAA, QTYPE, RCODE, RR, A, DNSRecord
 
@@ -23,7 +25,7 @@ from mirenai.domain.policy import (
     select_policy,
 )
 from mirenai.domain.querybuffer import QueryBuffer
-from mirenai.domain.state import RuntimeSettings, RuntimeState
+from mirenai.domain.state import RuntimeSettings, RuntimeState, UpstreamServer
 from mirenai.logging import get_logger
 
 log = get_logger("dns.resolver")
@@ -141,7 +143,8 @@ class DnsResolver:
             servfail.header.rcode = RCODE.SERVFAIL
             return servfail, "servfail"
 
-        if settings.cache_enabled:
+        # Cache positive answers only; never negative (NXDOMAIN/NODATA) responses.
+        if settings.cache_enabled and reply.header.rcode == RCODE.NOERROR and reply.rr:
             ttl = self._compute_ttl(reply, settings)
             if ttl > 0:
                 self._cache.set(key, reply.pack(), ttl)
@@ -152,7 +155,7 @@ class DnsResolver:
         if not upstreams:
             log.warning("no upstream resolvers configured; cannot forward")
             return None
-        for upstream in upstreams:
+        for upstream in self._balanced_order(upstreams):
             try:
                 raw = request.send(
                     upstream.address,
@@ -172,12 +175,17 @@ class DnsResolver:
         log.warning("all upstream resolvers failed")
         return None
 
+    @staticmethod
+    def _balanced_order(upstreams: list[UpstreamServer]) -> list[UpstreamServer]:
+        """Order by ascending priority, load-balancing equal-priority peers at random."""
+        by_priority = sorted(upstreams, key=lambda u: u.priority)
+        ordered: list[UpstreamServer] = []
+        for _priority, group in groupby(by_priority, key=lambda u: u.priority):
+            peers = list(group)
+            random.shuffle(peers)  # nosec B311  (load balancing, not security)
+            ordered.extend(peers)
+        return ordered
+
     def _compute_ttl(self, reply: DNSRecord, settings: RuntimeSettings) -> int:
-        answer_ttls = [int(record.ttl) for record in reply.rr]
-        if answer_ttls:
-            ttl = min(answer_ttls)
-        else:
-            # Negative response: fall back to the authority section (SOA) TTL.
-            auth_ttls = [int(record.ttl) for record in reply.auth]
-            ttl = min(auth_ttls) if auth_ttls else settings.cache_min_ttl
+        ttl = min(int(record.ttl) for record in reply.rr)
         return max(settings.cache_min_ttl, min(ttl, settings.cache_max_ttl))

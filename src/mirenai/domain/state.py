@@ -23,6 +23,7 @@ class UpstreamServer:
     address: str
     port: int
     protocol: str
+    priority: int
 
 
 @dataclass(frozen=True)

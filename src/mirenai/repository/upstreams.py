@@ -91,6 +91,11 @@ def load_upstreams() -> list[UpstreamServer]:
     with session_scope() as session:
         rows = session.scalars(stmt).all()
         return [
-            UpstreamServer(address=row.address, port=row.port, protocol=row.protocol)
+            UpstreamServer(
+                address=row.address,
+                port=row.port,
+                protocol=row.protocol,
+                priority=row.priority,
+            )
             for row in rows
         ]
