@@ -38,20 +38,20 @@ Every JSON response carries a `status` field: `"ok"` or `"error"`.
 ```json
 { "status": "ok", "policy": { /* resource object */ } }
 ```
-The resource key is the singular resource name: `policy`, `upstream`, `blocklist`, `settings`.
+The resource key is the singular resource name: `policy`, `upstream`, `blocklist`, `settings`, `host`.
 
 **Collection (success):**
 ```json
 { "status": "ok", "policies": [ /* array */ ], "total": 42 }
 ```
-The collection key is the plural resource name: `policies`, `upstreams`, `blocklists`, `queries`, `domains`. `total` is described in [§5 Pagination](#5-pagination).
+The collection key is the plural resource name: `policies`, `upstreams`, `blocklists`, `queries`, `domains`, `hosts`, `stats`, `requests`. `total` is described in [§5 Pagination](#5-pagination).
 
 **Delete (success):**
 ```json
 { "status": "ok", "deleted": 7 }
 ```
 > **Note the differing meaning of `deleted`:**
-> - For `DELETE /policies/{id}`, `/upstreams/{id}`, `/blocklists/{id}` → `deleted` is the **id** of the removed row.
+> - For `DELETE /policies/{id}`, `/upstreams/{id}`, `/blocklists/{id}`, `/hosts/{id}` → `deleted` is the **id** of the removed row.
 > - For `DELETE /queries` → `deleted` is the **number of rows** removed.
 
 **Error:**
@@ -82,7 +82,7 @@ All errors use the envelope above. Map on `code` (stable string), not on the hum
 
 ## 5. Pagination
 
-List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/domains`, `/queries`) accept **optional** `limit` and `offset` query parameters.
+List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/domains`, `/queries`, `/hosts`, `/stats`, `/requests`) accept **optional** `limit` and `offset` query parameters.
 
 - **Neither supplied →** all rows are returned; `total` equals the number of rows in the response.
 - **Either supplied →** results are paginated; `total` is the **full count** across all rows (not the length of this page).
@@ -93,6 +93,8 @@ List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/doma
 Example: `GET /policies?limit=25&offset=50` → up to 25 policies starting at row 51, with `total` = total number of policies.
 
 Ordering is fixed per resource (documented per endpoint below); there is no sort parameter.
+
+A few list endpoints also accept resource-specific **filter** parameters (documented with the endpoint): `/stats` accepts `client` and `hours`; `/requests` accepts `client`. Filters combine with `limit`/`offset`, and `total` reflects the filtered count.
 
 ---
 
@@ -347,6 +349,109 @@ Validation: `default_action` must be `deny` or `forward`. Unknown keys are rejec
 
 ---
 
+### 7.7 Hosts
+
+Client devices seen by the DNS server, stored in a separate `localhosts.db`
+database. The DNS server auto-records one row per source IP on every query
+(incrementing `query_count` and refreshing `last_seen`); there is **no create
+endpoint**. The only editable field is `device_name` — everything else is
+server-maintained.
+
+**Host object:**
+| field         | type              | notes                                              |
+| ------------- | ----------------- | -------------------------------------------------- |
+| `id`          | int               |                                                    |
+| `ip`          | string            | source IP (unique); server-recorded                |
+| `device_name` | string \| null    | operator-assigned label; `null` until set          |
+| `query_count` | int               | total queries seen from this IP; server-maintained |
+| `first_seen`  | string (datetime) | server-recorded                                    |
+| `last_seen`   | string (datetime) | server-maintained                                  |
+
+Ordering: by `last_seen` descending, then `id`.
+
+#### `GET /hosts`
+List, paginated. → `{ "status": "ok", "hosts": [...], "total": N }`
+
+#### `GET /hosts/{id}`
+→ `200 { "status": "ok", "host": {...} }` or `404 not_found`.
+
+#### `PUT /hosts/{id}`
+Set or clear the device name. → `200 { "status": "ok", "host": {...} }` or `404 not_found`.
+```json
+{ "device_name": "living-room-tv" }
+```
+Validation: `device_name` is a string of at most 255 characters, or `null`. Whitespace is trimmed; an empty/blank string is stored as `null` (so sending `""` or `null` both clear the name). `ip`, `query_count`, `first_seen`, `last_seen`, and `id` are read-only — sending any of them (or any other key) is rejected with `422`.
+
+#### `DELETE /hosts/{id}`
+→ `200 { "status": "ok", "deleted": <id> }` or `404 not_found`. (The DNS server will re-create the row on the device's next query.)
+
+---
+
+### 7.8 Client hourly stats
+
+Per-client DNS query counts bucketed by wall-clock hour and broken down by
+result. The DNS server aggregates these in memory and writes them **once an
+hour**; buckets older than **500 hours** are purged automatically. This resource
+is **read-only** — there are no create/update/delete endpoints.
+
+**Stat object:**
+| field        | type              | notes                                                       |
+| ------------ | ----------------- | ----------------------------------------------------------- |
+| `id`         | int               |                                                             |
+| `hour_start` | string (datetime) | top of the hour this bucket covers, e.g. `"2026-09-25T20:00:00"` |
+| `client`     | string            | source IP                                                   |
+| `total`      | int               | all queries in the hour (≈ sum of the columns below)        |
+| `forwarded`  | int               | answered by an upstream (`forward`)                         |
+| `cached`     | int               | answered from cache (`forward-cache`)                       |
+| `overridden` | int               | answered by a policy override (`override`)                  |
+| `denied`     | int               | refused by policy — `NXDOMAIN` (`deny`)                     |
+| `blocked`    | int               | refused by blocklist — `NXDOMAIN` (`blocklist`)             |
+| `servfail`   | int               | upstream failure (`servfail`)                               |
+
+"Approved" = `forwarded + cached + overridden`; "denied" = `denied + blocked`. `total` may exceed the sum of the columns if a future result type isn't itemized, so treat the columns as a breakdown of (not necessarily equal to) `total`.
+
+Ordering: by `hour_start` descending, then `client`.
+
+#### `GET /stats`
+List, paginated. → `{ "status": "ok", "stats": [...], "total": N }`
+
+**Filters (optional, combine with each other and with `limit`/`offset`):**
+- `client=<ip>` — only rows for that client.
+- `hours=<n>` — only buckets from the last `n` hours, i.e. `hour_start >= now - n hours`. Use this to fetch the **top N hours** precisely (e.g. `?hours=100` or `?hours=500`), since `limit` caps *rows* (which are per hour+client), not distinct hours. Non-integer `hours` → `422 validation_error`.
+
+> The in-memory buffer is flushed hourly, so the **current** (in-progress) hour typically has no row until the top of the next hour, and the most recent row can be up to an hour behind. A clean shutdown flushes early; an abrupt kill can lose up to the current hour.
+
+---
+
+### 7.9 Client requests
+
+Per-client DNS request objects (query names) with a hit counter, one row per
+`(client, domain, qtype)`. The DNS server aggregates these in memory and writes
+them in an **hourly batch**. This resource is **read-only** — there are no
+create/update/delete endpoints.
+
+**Request object:**
+| field        | type              | notes                                            |
+| ------------ | ----------------- | ------------------------------------------------ |
+| `id`         | int               |                                                  |
+| `client`     | string            | source IP                                        |
+| `domain`     | string            | the queried name (the "request object")          |
+| `qtype`      | string            | DNS record type, e.g. `A`, `AAAA`, `CNAME`, `MX` |
+| `hits`       | int               | number of times this client queried this object  |
+| `first_seen` | string (datetime) |                                                  |
+| `last_seen`  | string (datetime) |                                                  |
+
+Ordering: by `hits` descending, then `id` — so the most-requested ("principal") objects come first. `GET /requests?limit=100` returns the top 100.
+
+#### `GET /requests`
+List, paginated. → `{ "status": "ok", "requests": [...], "total": N }`
+
+**Filter (optional):** `client=<ip>` — only that client's request objects. Combines with `limit`/`offset`; e.g. `?client=10.0.0.5&limit=10` returns that client's top 10 objects by hits.
+
+> Like the query log, timestamps and hit counts reflect the hourly flush, so the most recent activity can be up to an hour behind. This table has no automatic retention cap — it grows with the number of distinct `(client, domain, qtype)` triples seen.
+
+---
+
 ## 8. Enumerations reference
 
 | Enum              | Allowed values                                      | Used by                      |
@@ -391,6 +496,9 @@ export type UpstreamList  = OkEnvelope & { upstreams:  Upstream[];  total: numbe
 export type BlocklistList = OkEnvelope & { blocklists: Blocklist[]; total: number };
 export type DomainList    = OkEnvelope & { domains:    string[];    total: number };
 export type QueryList     = OkEnvelope & { queries:    QueryLog[];  total: number };
+export type HostList      = OkEnvelope & { hosts:      Host[];      total: number };
+export type StatsList     = OkEnvelope & { stats:      ClientHourlyStat[]; total: number };
+export type RequestList   = OkEnvelope & { requests:   ClientRequest[]; total: number };
 
 export type DeleteResult = OkEnvelope & { deleted: number }; // deleted = id, or row count for /queries
 
@@ -473,6 +581,42 @@ export interface QueryLog {
   qtype: string;
   count: number;
   last_action: PolicyAction | null;
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface Host {
+  id: number;
+  ip: string;                  // unique, server-recorded
+  device_name: string | null;  // operator-assigned; only editable field
+  query_count: number;         // server-maintained
+  first_seen: string;
+  last_seen: string;
+}
+
+export interface HostUpdate {
+  device_name?: string | null; // max 255 chars; "" or null clears it
+}
+
+export interface ClientHourlyStat {
+  id: number;
+  hour_start: string;          // top of the hour (local, no offset)
+  client: string;              // source IP
+  total: number;
+  forwarded: number;           // approved: forward
+  cached: number;              // approved: cache hit
+  overridden: number;          // approved: policy override
+  denied: number;              // denied: policy NXDOMAIN
+  blocked: number;             // denied: blocklist NXDOMAIN
+  servfail: number;            // upstream failure
+}
+
+export interface ClientRequest {
+  id: number;
+  client: string;              // source IP
+  domain: string;              // the queried name (request object)
+  qtype: string;               // A | AAAA | CNAME | MX | ...
+  hits: number;
   first_seen: string;
   last_seen: string;
 }

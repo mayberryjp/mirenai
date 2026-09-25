@@ -1,6 +1,8 @@
 from dnslib import RCODE, DNSRecord
 
 from mirenai.domain.cache import TTLCache
+from mirenai.domain.clientrequests import ClientRequestBuffer
+from mirenai.domain.clientstats import ClientStatsBuffer
 from mirenai.domain.policy import PolicyRule
 from mirenai.domain.querybuffer import QueryAgg, QueryBuffer
 from mirenai.domain.resolver import DnsResolver
@@ -21,8 +23,10 @@ def _make_resolver(
         load_blocklist=lambda: blocklist or frozenset(),
     )
     buffer = QueryBuffer(flush=lambda rows: None, flush_seconds=5)
+    stats = ClientStatsBuffer(flush=lambda rows: None, flush_seconds=3600)
+    requests = ClientRequestBuffer(flush=lambda rows: None, flush_seconds=3600)
     cache: TTLCache[bytes] = TTLCache(100)
-    return DnsResolver(state, cache, buffer)
+    return DnsResolver(state, cache, buffer, stats, requests)
 
 
 def test_deny_returns_nxdomain() -> None:

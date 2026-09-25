@@ -16,11 +16,17 @@ from dnslib.server import BaseResolver, DNSServer
 
 from mirenai.config import settings
 from mirenai.domain.cache import TTLCache
+from mirenai.domain.clientrequests import ClientRequestBuffer
+from mirenai.domain.clientstats import ClientStatsBuffer
+from mirenai.domain.hosts import HostTracker
 from mirenai.domain.querybuffer import QueryBuffer
 from mirenai.domain.resolver import DnsResolver
 from mirenai.domain.state import RuntimeState
 from mirenai.logging import configure_logging, get_logger
 from mirenai.repository.blocklists import load_blocklist_domains
+from mirenai.repository.client_requests import record_client_requests
+from mirenai.repository.client_stats import record_client_stats
+from mirenai.repository.hosts import load_known_hosts, record_hosts
 from mirenai.repository.policies import load_rules
 from mirenai.repository.query_log import record_queries
 from mirenai.repository.settings import load_runtime_settings
@@ -29,14 +35,18 @@ from mirenai.repository.upstreams import load_upstreams
 log = get_logger("dns.server")
 
 _DB_RETRY_SECONDS = 3
+_STATS_FLUSH_SECONDS = 3600
+_REQUESTS_FLUSH_SECONDS = 3600
 
 
 class ScreeningResolver(BaseResolver):  # type: ignore[misc]  # dnslib is untyped
-    def __init__(self, core: DnsResolver) -> None:
+    def __init__(self, core: DnsResolver, hosts: HostTracker) -> None:
         self._core = core
+        self._hosts = hosts
 
     def resolve(self, request: Any, handler: Any) -> Any:
         client_ip = handler.client_address[0]
+        self._hosts.record(client_ip)
         try:
             return self._core.handle(request, client_ip)
         except Exception:
@@ -68,8 +78,18 @@ def main() -> None:
     runtime = state.settings
     cache: TTLCache[bytes] = TTLCache(runtime.cache_max_entries)
     buffer = QueryBuffer(flush=record_queries, flush_seconds=runtime.query_flush_seconds)
-    core = DnsResolver(state, cache, buffer)
-    resolver = ScreeningResolver(core)
+    stats = ClientStatsBuffer(flush=record_client_stats, flush_seconds=_STATS_FLUSH_SECONDS)
+    requests = ClientRequestBuffer(
+        flush=record_client_requests, flush_seconds=_REQUESTS_FLUSH_SECONDS
+    )
+    hosts = HostTracker(
+        flush=record_hosts,
+        load=load_known_hosts,
+        flush_seconds=runtime.query_flush_seconds,
+        refresh_seconds=runtime.refresh_seconds,
+    )
+    core = DnsResolver(state, cache, buffer, stats, requests)
+    resolver = ScreeningResolver(core, hosts)
 
     udp_server = DNSServer(
         resolver, port=settings.dns_port, address=settings.dns_listen_address, tcp=False
@@ -80,6 +100,9 @@ def main() -> None:
 
     state.start_refresh()
     buffer.start()
+    stats.start()
+    requests.start()
+    hosts.start()
     udp_server.start_thread()
     tcp_server.start_thread()
     log.info(
@@ -99,6 +122,9 @@ def main() -> None:
         tcp_server.stop()
         state.stop()
         buffer.stop()
+        stats.stop()
+        requests.stop()
+        hosts.stop()
 
 
 if __name__ == "__main__":

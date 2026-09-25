@@ -64,3 +64,14 @@ def read_pagination() -> tuple[bool, int | None, int, dict[str, Any] | None]:
             "validation_error", "Invalid request", 422, "limit and offset must be integers"
         )
     return True, limit, offset, None
+
+
+def read_int_query(name: str) -> tuple[int | None, dict[str, Any] | None]:
+    """Read an optional integer query parameter. Returns ``(value, error)``."""
+    raw = request.query.get(name)
+    if raw is None or raw == "":
+        return None, None
+    try:
+        return int(raw), None
+    except ValueError:
+        return None, error("validation_error", "Invalid request", 422, f"{name} must be an integer")

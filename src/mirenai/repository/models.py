@@ -21,7 +21,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from mirenai.db import Base, BlocklistBase
+from mirenai.db import Base, BlocklistBase, HostsBase
 
 # datetime('now','localtime') resolves against the container's TZ env var.
 _LOCAL_NOW = text("(datetime('now', 'localtime'))")
@@ -95,6 +95,55 @@ class AppSetting(Base):
     )
 
 
+class ClientHourlyStat(Base):
+    """Per-client DNS query counts for one wall-clock hour, broken down by result.
+
+    Written once an hour from an in-memory buffer (upsert on ``hour_start`` +
+    ``client``); buckets older than the retention window are purged on write.
+    """
+
+    __tablename__ = "client_hourly_stats"
+    __table_args__ = (
+        UniqueConstraint("hour_start", "client", name="uq_client_hourly_stats_hour_client"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    hour_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    client: Mapped[str] = mapped_column(String(64), nullable=False)
+    total: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    forwarded: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    cached: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    overridden: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    denied: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    blocked: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    servfail: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+
+class ClientRequest(Base):
+    """Per-client DNS request object (query name) with a hit counter.
+
+    One row per ``(client, domain, qtype)``. Aggregated in memory and written in
+    an hourly batch (upsert: ``hits += n``, ``last_seen`` refreshed).
+    """
+
+    __tablename__ = "client_requests"
+    __table_args__ = (
+        UniqueConstraint("client", "domain", "qtype", name="uq_client_requests_client_domain_qtype"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client: Mapped[str] = mapped_column(String(64), nullable=False)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    qtype: Mapped[str] = mapped_column(String(16), nullable=False)
+    hits: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+
+
 class Blocklist(Base):
     """Configuration for a downloadable DNS blocklist (name, source URL, cadence).
 
@@ -137,3 +186,24 @@ class BlocklistDomain(BlocklistBase):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     blocklist_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+
+
+class Host(HostsBase):
+    """A client host seen by the DNS server, stored in the separate localhosts database.
+
+    One row per source IP: ``query_count`` accumulates across queries, ``first_seen``
+    is set once on insert, and ``last_seen`` is refreshed on every flush.
+    """
+
+    __tablename__ = "hosts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ip: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    device_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    query_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )

@@ -16,6 +16,8 @@ from dnslib import AAAA, QTYPE, RCODE, RR, A, DNSRecord
 
 from mirenai.domain.blocklist import is_blocked
 from mirenai.domain.cache import TTLCache
+from mirenai.domain.clientrequests import ClientRequestBuffer
+from mirenai.domain.clientstats import ClientStatsBuffer
 from mirenai.domain.policy import (
     ACTION_BLOCKLIST,
     ACTION_DENY,
@@ -50,10 +52,19 @@ def _cache_key(qname: str, qtype: int, qclass: int) -> str:
 
 
 class DnsResolver:
-    def __init__(self, state: RuntimeState, cache: TTLCache[bytes], buffer: QueryBuffer) -> None:
+    def __init__(
+        self,
+        state: RuntimeState,
+        cache: TTLCache[bytes],
+        buffer: QueryBuffer,
+        stats: ClientStatsBuffer,
+        requests: ClientRequestBuffer,
+    ) -> None:
         self._state = state
         self._cache = cache
         self._buffer = buffer
+        self._stats = stats
+        self._requests = requests
 
     def handle(self, request: DNSRecord, client_ip: str) -> DNSRecord:
         question = request.q
@@ -77,6 +88,8 @@ class DnsResolver:
             reply, result = self._forward_or_cache(request, settings)
 
         self._buffer.add(client_ip, qname, qtype_name, result)
+        self._stats.add(client_ip, result)
+        self._requests.add(client_ip, qname, qtype_name)
         if settings.log_queries:
             log.info(
                 "query client=%s name=%s type=%s action=%s rcode=%s answers=%d",

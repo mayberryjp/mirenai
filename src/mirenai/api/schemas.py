@@ -158,6 +158,24 @@ class UpstreamUpdate(BaseModel):
         return value
 
 
+class HostUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    device_name: str | None = None
+
+    @field_validator("device_name")
+    @classmethod
+    def _validate_device_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        if len(trimmed) > 255:
+            raise ValueError("device_name must be at most 255 characters")
+        return trimmed
+
+
 class SettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
