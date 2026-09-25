@@ -3,6 +3,7 @@ services:
     image: mirenai:dev
     environment:
       DATABASE_URL: sqlite:////data/mirenai.db
+      BLOCKLIST_DATABASE_URL: sqlite:////data/blocklist.db
       API_LISTEN_ADDRESS: 0.0.0.0
       API_PORT: "8000"
       DNS_LISTEN_ADDRESS: 0.0.0.0

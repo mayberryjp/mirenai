@@ -21,7 +21,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from mirenai.db import Base
+from mirenai.db import Base, BlocklistBase
 
 # datetime('now','localtime') resolves against the container's TZ env var.
 _LOCAL_NOW = text("(datetime('now', 'localtime'))")
@@ -93,3 +93,47 @@ class AppSetting(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW, onupdate=_LOCAL_NOW
     )
+
+
+class Blocklist(Base):
+    """Configuration for a downloadable DNS blocklist (name, source URL, cadence).
+
+    The list contents themselves live in the separate blocklist database
+    (:class:`BlocklistDomain`); this row only tracks how and when to fetch them.
+    """
+
+    __tablename__ = "blocklists"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    update_interval_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    domain_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_downloaded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_status: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW, onupdate=_LOCAL_NOW
+    )
+
+
+class BlocklistDomain(BlocklistBase):
+    """A single blocked domain, stored in the separate blocklist database.
+
+    ``blocklist_id`` references :class:`Blocklist` in the configuration database;
+    the two live in different files, so this is a logical (not enforced) foreign key.
+    """
+
+    __tablename__ = "blocklist_domains"
+    __table_args__ = (
+        UniqueConstraint("blocklist_id", "domain", name="uq_blocklist_domain"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    blocklist_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)

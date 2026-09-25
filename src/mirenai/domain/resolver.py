@@ -12,8 +12,10 @@ from ipaddress import IPv4Address, IPv6Address, ip_address
 
 from dnslib import AAAA, QTYPE, RCODE, RR, A, DNSRecord
 
+from mirenai.domain.blocklist import is_blocked
 from mirenai.domain.cache import TTLCache
 from mirenai.domain.policy import (
+    ACTION_BLOCKLIST,
     ACTION_DENY,
     ACTION_OVERRIDE,
     PolicyRule,
@@ -66,6 +68,9 @@ class DnsResolver:
         elif action == ACTION_DENY:
             reply = self._deny(request)
             result = "deny"
+        elif action == ACTION_BLOCKLIST and is_blocked(self._state.blocklist, qname):
+            reply = self._deny(request)
+            result = "blocklist"
         else:
             reply, result = self._forward_or_cache(request, settings)
 

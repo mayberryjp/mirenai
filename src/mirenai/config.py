@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="MIRENAI_", extra="ignore")
 
     database_url: str = Field("sqlite:////data/mirenai.db", validation_alias="DATABASE_URL")
+    blocklist_database_url: str = Field(
+        "sqlite:////data/blocklist.db", validation_alias="BLOCKLIST_DATABASE_URL"
+    )
 
     api_listen_address: str = Field("0.0.0.0", validation_alias="API_LISTEN_ADDRESS")  # nosec B104
     api_port: int = Field(8000, validation_alias="API_PORT")

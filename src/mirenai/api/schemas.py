@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ipaddress import ip_address
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
@@ -21,6 +22,19 @@ def _check_client(value: str) -> str:
 def _check_port(value: int) -> int:
     if not 1 <= value <= 65535:
         raise ValueError("port must be between 1 and 65535")
+    return value
+
+
+def _check_url(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("url must be an http(s) URL")
+    return value
+
+
+def _check_interval_hours(value: int) -> int:
+    if value < 1:
+        raise ValueError("update_interval_hours must be at least 1")
     return value
 
 
@@ -163,3 +177,55 @@ class SettingsUpdate(BaseModel):
         if value is not None and value not in _VALID_DEFAULT_ACTIONS:
             raise ValueError(f"default_action must be one of {sorted(_VALID_DEFAULT_ACTIONS)}")
         return value
+
+
+class BlocklistCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    url: str
+    update_interval_hours: int = 24
+    enabled: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("name must not be empty")
+        return value
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, value: str) -> str:
+        return _check_url(value)
+
+    @field_validator("update_interval_hours")
+    @classmethod
+    def _validate_interval(cls, value: int) -> int:
+        return _check_interval_hours(value)
+
+
+class BlocklistUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    url: str | None = None
+    update_interval_hours: int | None = None
+    enabled: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("name must not be empty")
+        return value
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, value: str | None) -> str | None:
+        return _check_url(value) if value is not None else value
+
+    @field_validator("update_interval_hours")
+    @classmethod
+    def _validate_interval(cls, value: int | None) -> int | None:
+        return _check_interval_hours(value) if value is not None else value

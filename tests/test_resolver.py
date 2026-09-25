@@ -11,12 +11,14 @@ def _make_resolver(
     policies: list[PolicyRule],
     settings: RuntimeSettings | None = None,
     upstreams: list[UpstreamServer] | None = None,
+    blocklist: frozenset[str] | None = None,
 ) -> DnsResolver:
     effective = settings or RuntimeSettings()
     state = RuntimeState(
         load_settings=lambda: effective,
         load_policies=lambda: policies,
         load_upstreams=lambda: upstreams or [],
+        load_blocklist=lambda: blocklist or frozenset(),
     )
     buffer = QueryBuffer(flush=lambda rows: None, flush_seconds=5)
     cache: TTLCache[bytes] = TTLCache(100)
@@ -50,6 +52,37 @@ def test_forward_without_upstreams_is_servfail() -> None:
         RuntimeSettings(cache_enabled=False),
     )
     reply = resolver.handle(DNSRecord.question("example.com", "A"), "1.2.3.4")
+    assert reply.header.rcode == RCODE.SERVFAIL
+
+
+def test_blocklist_action_denies_listed_domain() -> None:
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "blocklist")],
+        RuntimeSettings(cache_enabled=False),
+        blocklist=frozenset({"ads.example"}),
+    )
+    reply = resolver.handle(DNSRecord.question("ads.example", "A"), "1.2.3.4")
+    assert reply.header.rcode == RCODE.NXDOMAIN
+
+
+def test_blocklist_action_denies_subdomain_of_listed_domain() -> None:
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "blocklist")],
+        RuntimeSettings(cache_enabled=False),
+        blocklist=frozenset({"example.com"}),
+    )
+    reply = resolver.handle(DNSRecord.question("tracker.example.com", "A"), "1.2.3.4")
+    assert reply.header.rcode == RCODE.NXDOMAIN
+
+
+def test_blocklist_action_forwards_unlisted_domain() -> None:
+    # Not on the list -> falls through to forward, which SERVFAILs without upstreams.
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "blocklist")],
+        RuntimeSettings(cache_enabled=False),
+        blocklist=frozenset({"ads.example"}),
+    )
+    reply = resolver.handle(DNSRecord.question("good.example", "A"), "1.2.3.4")
     assert reply.header.rcode == RCODE.SERVFAIL
 
 

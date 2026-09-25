@@ -20,6 +20,7 @@ from mirenai.domain.querybuffer import QueryBuffer
 from mirenai.domain.resolver import DnsResolver
 from mirenai.domain.state import RuntimeState
 from mirenai.logging import configure_logging, get_logger
+from mirenai.repository.blocklists import load_blocklist_domains
 from mirenai.repository.policies import load_rules
 from mirenai.repository.query_log import record_queries
 from mirenai.repository.settings import load_runtime_settings
@@ -53,6 +54,7 @@ def _build_state() -> RuntimeState:
                 load_settings=load_runtime_settings,
                 load_policies=load_rules,
                 load_upstreams=load_upstreams,
+                load_blocklist=load_blocklist_domains,
             )
         except Exception:
             log.warning("database not ready; retrying in %ds", _DB_RETRY_SECONDS)

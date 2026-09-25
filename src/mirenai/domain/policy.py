@@ -7,6 +7,8 @@ wildcards so the three per-host modes collapse into one table:
 * deny everything   -> ``(client, "*", deny)``
 * allow some        -> one row per allowed domain, with no wildcard row, so
   anything unmatched falls through to the configured default action (deny).
+* allow all but the DNS blocklist -> ``(client, "*", blocklist)``: forward every
+  lookup except names that appear on an enabled blocklist, which are denied.
 
 Domain column grammar:
 
@@ -30,7 +32,8 @@ WILDCARD = "*"
 ACTION_FORWARD = "forward"
 ACTION_OVERRIDE = "override"
 ACTION_DENY = "deny"
-VALID_ACTIONS = frozenset({ACTION_FORWARD, ACTION_OVERRIDE, ACTION_DENY})
+ACTION_BLOCKLIST = "blocklist"
+VALID_ACTIONS = frozenset({ACTION_FORWARD, ACTION_OVERRIDE, ACTION_DENY, ACTION_BLOCKLIST})
 
 
 @dataclass(frozen=True)

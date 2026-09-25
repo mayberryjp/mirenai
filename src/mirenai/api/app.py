@@ -4,6 +4,7 @@ from typing import Any
 
 from bottle import Bottle, request, response
 
+from mirenai.api.routes.blocklists import register_blocklist_routes
 from mirenai.api.routes.health import register_health_routes
 from mirenai.api.routes.policies import register_policy_routes
 from mirenai.api.routes.query_log import register_query_routes
@@ -26,6 +27,7 @@ def create_app() -> Bottle:
     register_upstream_routes(app)
     register_query_routes(app)
     register_settings_routes(app)
+    register_blocklist_routes(app)
 
     @app.hook("before_request")
     def start_timer() -> None:
