@@ -82,7 +82,7 @@ All errors use the envelope above. Map on `code` (stable string), not on the hum
 
 ## 5. Pagination
 
-List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/domains`, `/queries`, `/hosts`, `/stats`, `/requests`) accept **optional** `limit` and `offset` query parameters.
+List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/domains`, `/queries`, `/hosts`, `/stats`, `/stats/site`, `/requests`) accept **optional** `limit` and `offset` query parameters.
 
 - **Neither supplied →** all rows are returned; `total` equals the number of rows in the response.
 - **Either supplied →** results are paginated; `total` is the **full count** across all rows (not the length of this page).
@@ -94,7 +94,7 @@ Example: `GET /policies?limit=25&offset=50` → up to 25 policies starting at ro
 
 Ordering is fixed per resource (documented per endpoint below); there is no sort parameter.
 
-A few list endpoints also accept resource-specific **filter** parameters (documented with the endpoint): `/stats` accepts `client` and `hours`; `/requests` accepts `client`. Filters combine with `limit`/`offset`, and `total` reflects the filtered count.
+A few list endpoints also accept resource-specific **filter** parameters (documented with the endpoint): `/stats` accepts `client` and `hours`; `/stats/site` accepts `hours`; `/requests` accepts `client`. Filters combine with `limit`/`offset`, and `total` reflects the filtered count.
 
 ---
 
@@ -421,6 +421,26 @@ List, paginated. → `{ "status": "ok", "stats": [...], "total": N }`
 
 > The in-memory buffer is flushed hourly, so the **current** (in-progress) hour typically has no row until the top of the next hour, and the most recent row can be up to an hour behind. A clean shutdown flushes early; an abrupt kill can lose up to the current hour.
 
+#### `GET /stats/site`
+Site-wide hourly totals — the same counts **summed across all clients**, one row per hour (no `client`/`id`). Read-only, paginated. → `{ "status": "ok", "stats": [...], "total": N }` where `total` is the number of hours.
+
+**Filter (optional):** `hours=<n>` — only the last `n` hours (same semantics as `/stats`). There is **no** `client` filter here (it is aggregated across every client). Non-integer `hours` → `422 validation_error`.
+
+**Site stat object** (note: no `id` or `client`; adds `clients`):
+| field        | type              | notes                                              |
+| ------------ | ----------------- | -------------------------------------------------- |
+| `hour_start` | string (datetime) | top of the hour                                    |
+| `total`      | int               | all queries that hour, across all clients          |
+| `forwarded`  | int               | Σ `forward`                                        |
+| `cached`     | int               | Σ `forward-cache`                                  |
+| `overridden` | int               | Σ `override`                                       |
+| `denied`     | int               | Σ `deny`                                           |
+| `blocked`    | int               | Σ `blocklist`                                      |
+| `servfail`   | int               | Σ `servfail`                                       |
+| `clients`    | int               | number of distinct clients active that hour        |
+
+Ordering: by `hour_start` descending. Example: `GET /stats/site?hours=168` for the last week of site-wide hourly totals.
+
 ---
 
 ### 7.9 Client requests
@@ -465,179 +485,7 @@ everything except names on an enabled blocklist (those return `NXDOMAIN`).
 
 ---
 
-## 9. TypeScript types
-
-Ready-to-use client types derived from the API. Datetime fields are ISO strings
-(local time, no offset — see [§6](#6-data-formats)).
-
-```ts
-// ---- Envelopes ----
-export interface ErrorEnvelope {
-  status: "error";
-  code:
-    | "bad_request"
-    | "not_found"
-    | "conflict"
-    | "validation_error"
-    | "download_failed"
-    | "not_ready"
-    | "internal_error";
-  error: string;
-  detail?: string;
-}
-
-export interface OkEnvelope {
-  status: "ok";
-}
-
-// List responses carry the array under the plural resource key plus a total.
-export type PolicyList    = OkEnvelope & { policies:   Policy[];    total: number };
-export type UpstreamList  = OkEnvelope & { upstreams:  Upstream[];  total: number };
-export type BlocklistList = OkEnvelope & { blocklists: Blocklist[]; total: number };
-export type DomainList    = OkEnvelope & { domains:    string[];    total: number };
-export type QueryList     = OkEnvelope & { queries:    QueryLog[];  total: number };
-export type HostList      = OkEnvelope & { hosts:      Host[];      total: number };
-export type StatsList     = OkEnvelope & { stats:      ClientHourlyStat[]; total: number };
-export type RequestList   = OkEnvelope & { requests:   ClientRequest[]; total: number };
-
-export type DeleteResult = OkEnvelope & { deleted: number }; // deleted = id, or row count for /queries
-
-// ---- Resources ----
-export type PolicyAction = "forward" | "override" | "deny" | "blocklist";
-
-export interface Policy {
-  id: number;
-  client: string;              // IP or "*"
-  domain: string;              // exact | "*.suffix" | "*"
-  action: PolicyAction;
-  override_response: string | null; // comma-separated IPs
-  override_ttl: number;
-  enabled: boolean;
-  description: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface PolicyCreate {
-  client: string;
-  domain: string;
-  action: PolicyAction;
-  override_response?: string | null;
-  override_ttl?: number;       // default 300
-  enabled?: boolean;           // default true
-  description?: string | null;
-}
-export type PolicyUpdate = Partial<PolicyCreate>;
-
-export type UpstreamProtocol = "udp" | "tcp";
-
-export interface Upstream {
-  id: number;
-  name: string | null;
-  address: string;
-  port: number;
-  protocol: UpstreamProtocol;
-  enabled: boolean;
-  priority: number;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface UpstreamCreate {
-  address: string;
-  name?: string | null;
-  port?: number;               // default 53
-  protocol?: UpstreamProtocol; // default "udp"
-  enabled?: boolean;           // default true
-  priority?: number;           // default 100
-}
-export type UpstreamUpdate = Partial<UpstreamCreate>;
-
-export interface Blocklist {
-  id: number;
-  name: string;
-  url: string;
-  update_interval_hours: number;
-  enabled: boolean;
-  domain_count: number;             // read-only
-  last_downloaded_at: string | null;// read-only
-  last_status: string | null;       // read-only
-  created_at: string;
-  updated_at: string;
-}
-
-export interface BlocklistCreate {
-  name: string;
-  url: string;
-  update_interval_hours?: number;   // default 24, >= 1
-  enabled?: boolean;                // default true
-}
-export type BlocklistUpdate = Partial<BlocklistCreate>;
-
-export interface QueryLog {
-  id: number;
-  client: string;
-  domain: string;
-  qtype: string;
-  count: number;
-  last_action: PolicyAction | null;
-  first_seen: string;
-  last_seen: string;
-}
-
-export interface Host {
-  id: number;
-  ip: string;                  // unique, server-recorded
-  device_name: string | null;  // operator-assigned; only editable field
-  query_count: number;         // server-maintained
-  first_seen: string;
-  last_seen: string;
-}
-
-export interface HostUpdate {
-  device_name?: string | null; // max 255 chars; "" or null clears it
-}
-
-export interface ClientHourlyStat {
-  id: number;
-  hour_start: string;          // top of the hour (local, no offset)
-  client: string;              // source IP
-  total: number;
-  forwarded: number;           // approved: forward
-  cached: number;              // approved: cache hit
-  overridden: number;          // approved: policy override
-  denied: number;              // denied: policy NXDOMAIN
-  blocked: number;             // denied: blocklist NXDOMAIN
-  servfail: number;            // upstream failure
-}
-
-export interface ClientRequest {
-  id: number;
-  client: string;              // source IP
-  domain: string;              // the queried name (request object)
-  qtype: string;               // A | AAAA | CNAME | MX | ...
-  hits: number;
-  first_seen: string;
-  last_seen: string;
-}
-
-export interface Settings {
-  cache_enabled: boolean;
-  cache_max_ttl: number;
-  cache_min_ttl: number;
-  cache_max_entries: number;
-  forward_timeout: number;
-  default_action: "deny" | "forward";
-  refresh_seconds: number;
-  query_flush_seconds: number;
-  log_queries: boolean;
-}
-export type SettingsUpdate = Partial<Settings>;
-```
-
----
-
-## 10. Integration notes & gotchas
+## 9. Integration notes & gotchas
 
 - **Treat timestamps as local wall-clock**, not UTC. They have no offset suffix. If you need correct ordering across DST or zones, rely on the server-provided ordering rather than reparsing.
 - **Map errors on `code`, not `error` text.** The `error`/`detail` strings are for display and may change.

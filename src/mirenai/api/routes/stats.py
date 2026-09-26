@@ -22,3 +22,18 @@ def register_stats_routes(app: Bottle) -> None:
         rows = repo.list_client_stats(limit=limit, offset=offset, client=client, hours=hours)
         total = repo.count_client_stats(client=client, hours=hours)
         return {"status": "ok", "stats": rows, "total": total}
+
+    @app.get("/stats/site")
+    def site_stats() -> dict[str, Any]:
+        paginate, limit, offset, err = read_pagination()
+        if err is not None:
+            return err
+        hours, err = read_int_query("hours")
+        if err is not None:
+            return err
+        if not paginate:
+            rows = repo.list_site_hourly_stats(hours=hours)
+            return {"status": "ok", "stats": rows, "total": len(rows)}
+        rows = repo.list_site_hourly_stats(limit=limit, offset=offset, hours=hours)
+        total = repo.count_site_hourly_stats(hours=hours)
+        return {"status": "ok", "stats": rows, "total": total}

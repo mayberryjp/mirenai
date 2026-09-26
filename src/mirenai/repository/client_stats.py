@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mirenai.db import session_scope
@@ -95,3 +95,50 @@ def count_client_stats(client: str | None = None, hours: int | None = None) -> i
         stmt = stmt.where(ClientHourlyStat.hour_start >= datetime.now() - timedelta(hours=hours))
     with session_scope() as session:
         return len(session.scalars(stmt).all())
+
+
+def _site_to_dict(row: Any) -> dict[str, Any]:
+    return {
+        "hour_start": row.hour_start.isoformat(),
+        "total": int(row.total),
+        "forwarded": int(row.forwarded),
+        "cached": int(row.cached),
+        "overridden": int(row.overridden),
+        "denied": int(row.denied),
+        "blocked": int(row.blocked),
+        "servfail": int(row.servfail),
+        "clients": int(row.clients),
+    }
+
+
+def list_site_hourly_stats(
+    limit: int | None = None, offset: int = 0, hours: int | None = None
+) -> list[dict[str, Any]]:
+    """Hourly totals summed across all clients (one row per hour)."""
+    stmt = select(
+        ClientHourlyStat.hour_start,
+        func.sum(ClientHourlyStat.total).label("total"),
+        func.sum(ClientHourlyStat.forwarded).label("forwarded"),
+        func.sum(ClientHourlyStat.cached).label("cached"),
+        func.sum(ClientHourlyStat.overridden).label("overridden"),
+        func.sum(ClientHourlyStat.denied).label("denied"),
+        func.sum(ClientHourlyStat.blocked).label("blocked"),
+        func.sum(ClientHourlyStat.servfail).label("servfail"),
+        func.count(func.distinct(ClientHourlyStat.client)).label("clients"),
+    )
+    if hours is not None:
+        stmt = stmt.where(ClientHourlyStat.hour_start >= datetime.now() - timedelta(hours=hours))
+    stmt = stmt.group_by(ClientHourlyStat.hour_start).order_by(ClientHourlyStat.hour_start.desc())
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
+    with session_scope() as session:
+        rows = session.execute(stmt).all()
+        return [_site_to_dict(row) for row in rows]
+
+
+def count_site_hourly_stats(hours: int | None = None) -> int:
+    stmt = select(func.count(func.distinct(ClientHourlyStat.hour_start)))
+    if hours is not None:
+        stmt = stmt.where(ClientHourlyStat.hour_start >= datetime.now() - timedelta(hours=hours))
+    with session_scope() as session:
+        return int(session.scalar(stmt) or 0)
