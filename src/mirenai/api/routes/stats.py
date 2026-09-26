@@ -16,6 +16,10 @@ def register_stats_routes(app: Bottle) -> None:
         if err is not None:
             return err
         client = request.query.get("client") or None
+        if hours is not None and client is not None:
+            # gap-filled per-client series for graphs; limit/offset ignored
+            rows = repo.list_client_stats(client=client, hours=hours, fill=True)
+            return {"status": "ok", "stats": rows, "total": len(rows)}
         if not paginate:
             rows = repo.list_client_stats(client=client, hours=hours)
             return {"status": "ok", "stats": rows, "total": len(rows)}
@@ -31,9 +35,13 @@ def register_stats_routes(app: Bottle) -> None:
         hours, err = read_int_query("hours")
         if err is not None:
             return err
-        if not paginate:
-            rows = repo.list_site_hourly_stats(hours=hours)
+        if hours is not None:
+            # gap-filled site-wide series for graphs; limit/offset ignored
+            rows = repo.list_site_hourly_stats(hours=hours, fill=True)
             return {"status": "ok", "stats": rows, "total": len(rows)}
-        rows = repo.list_site_hourly_stats(limit=limit, offset=offset, hours=hours)
-        total = repo.count_site_hourly_stats(hours=hours)
+        if not paginate:
+            rows = repo.list_site_hourly_stats()
+            return {"status": "ok", "stats": rows, "total": len(rows)}
+        rows = repo.list_site_hourly_stats(limit=limit, offset=offset)
+        total = repo.count_site_hourly_stats()
         return {"status": "ok", "stats": rows, "total": total}

@@ -419,12 +419,16 @@ List, paginated. → `{ "status": "ok", "stats": [...], "total": N }`
 - `client=<ip>` — only rows for that client.
 - `hours=<n>` — only buckets from the last `n` hours, i.e. `hour_start >= now - n hours`. Use this to fetch the **top N hours** precisely (e.g. `?hours=100` or `?hours=500`), since `limit` caps *rows* (which are per hour+client), not distinct hours. Non-integer `hours` → `422 validation_error`.
 
+**Gap-filling for graphs:** when you pass **both** `client` and `hours` (a single client's time series), the response is filled to **one row per hour** across the whole window — hours with no data come back with every count `0` and `id: null` — so a per-client graph has no missing points. In this mode `limit`/`offset` are ignored, `total` is the number of hours returned, and the window is capped at 500 hours (the retention limit). Without `client`, `/stats` is not gap-filled (it can hold many clients per hour).
+
 > The in-memory buffer is flushed hourly, so the **current** (in-progress) hour typically has no row until the top of the next hour, and the most recent row can be up to an hour behind. A clean shutdown flushes early; an abrupt kill can lose up to the current hour.
 
 #### `GET /stats/site`
 Site-wide hourly totals — the same counts **summed across all clients**, one row per hour (no `client`/`id`). Read-only, paginated. → `{ "status": "ok", "stats": [...], "total": N }` where `total` is the number of hours.
 
 **Filter (optional):** `hours=<n>` — only the last `n` hours (same semantics as `/stats`). There is **no** `client` filter here (it is aggregated across every client). Non-integer `hours` → `422 validation_error`.
+
+**Gap-filling for graphs:** when you pass `hours`, the response is filled to **one row per hour** across the whole window — hours with no queries come back with every count `0` (and `clients: 0`) — so the master graph has no missing points. In this mode `limit`/`offset` are ignored, `total` is the number of hours returned, and the window is capped at 500 hours (the retention limit).
 
 **Site stat object** (note: no `id` or `client`; adds `clients`):
 | field        | type              | notes                                              |
@@ -472,11 +476,55 @@ List, paginated. → `{ "status": "ok", "requests": [...], "total": N }`
 
 ---
 
+### 7.10 Client mode (simplified)
+
+A convenience wrapper over policies for the common “what should this client do by
+default?” toggle. A client's **mode** is just its wildcard policy row `(client,
+"*", action)`; this endpoint reads and sets it in **one call**, so the UI never
+has to list `/policies` or juggle `POST`/`PUT`/`DELETE`. The response is a flat
+object (fields at the top level, not under a resource key).
+
+**Modes:**
+| `mode`      | Meaning                                              | Backing policy row           |
+| ----------- | ---------------------------------------------------- | ---------------------------- |
+| `forward`   | Allow everything (forward all queries)               | `(client, "*", "forward")`   |
+| `deny`      | Block everything (`NXDOMAIN`)                        | `(client, "*", "deny")`      |
+| `blocklist` | Forward all, but block names on an enabled blocklist | `(client, "*", "blocklist")` |
+| `default`   | No client-wide rule — inherit the global `default_action` setting | *(no wildcard row)* |
+
+**Mode object:**
+| field       | type          | notes                                                         |
+| ----------- | ------------- | ------------------------------------------------------------- |
+| `client`    | string        | the IP from the path                                          |
+| `mode`      | string        | one of the modes above                                        |
+| `policy_id` | int \| null   | id of the backing wildcard policy, or `null` for `default`    |
+
+#### `GET /clients/{ip}/mode`
+→ `200 { "status": "ok", "client": "10.4.10.20", "mode": "deny", "policy_id": 7 }`
+
+`{ip}` must be a valid IP address (else `422 validation_error`). A never-configured client returns `"mode": "default"`, `"policy_id": null`.
+
+#### `PUT /clients/{ip}/mode`
+Idempotent upsert — always `200` with the resulting mode object (no `201`, no `409`, so you never check whether the row already exists).
+```json
+{ "mode": "forward" }
+```
+- `mode` is required and must be one of `forward`, `deny`, `blocklist`, `default`. An invalid mode or any unknown field → `422 validation_error`.
+- `forward`/`deny`/`blocklist` create or update the client's `(client, "*")` policy; `default` deletes it (the client then follows the global `default_action`).
+
+**Notes:**
+- This only touches the client's **wildcard** row. Per-domain policies for the client (exceptions added via `/policies`) are left untouched and still take precedence over the mode.
+- For a **whitelist** client (allow only specific names), keep the mode at `default` (or `deny`) and add per-domain `forward` rows via `/policies` — that pattern is intentionally not a single mode.
+- `GET` can report `"mode": "override"` if a client's wildcard row was set to `override` via the advanced `/policies` API; `PUT` does not accept `override` (it needs a response IP — use `/policies`).
+
+---
+
 ## 8. Enumerations reference
 
 | Enum              | Allowed values                                      | Used by                      |
 | ----------------- | --------------------------------------------------- | ---------------------------- |
 | Policy `action`   | `forward`, `override`, `deny`, `blocklist`          | policies                     |
+| Client `mode`     | `forward`, `deny`, `blocklist`, `default`           | /clients/{ip}/mode           |
 | Upstream `protocol` | `udp`, `tcp`                                      | upstreams                    |
 | `default_action`  | `deny`, `forward`                                   | settings                     |
 

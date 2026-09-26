@@ -7,6 +7,7 @@ counts, then purges buckets older than ``RETENTION_HOURS``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -18,6 +19,28 @@ from mirenai.domain.clientstats import ClientStatAgg
 from mirenai.repository.models import ClientHourlyStat
 
 RETENTION_HOURS = 500
+
+
+def _fill_hours(
+    rows: list[dict[str, Any]],
+    hours: int,
+    now: datetime,
+    make_zero: Callable[[str], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return one row per hour across the window (newest first), zero-filling gaps.
+
+    The window is capped at ``RETENTION_HOURS`` since older buckets are purged.
+    """
+    by_hour = {row["hour_start"]: row for row in rows}
+    end = now.replace(minute=0, second=0, microsecond=0)
+    cutoff = now - timedelta(hours=min(hours, RETENTION_HOURS))
+    filled: list[dict[str, Any]] = []
+    bucket = end
+    while bucket >= cutoff:
+        key = bucket.isoformat()
+        filled.append(by_hour[key] if key in by_hour else make_zero(key))
+        bucket -= timedelta(hours=1)
+    return filled
 
 
 def _to_dict(row: ClientHourlyStat) -> dict[str, Any]:
@@ -32,6 +55,21 @@ def _to_dict(row: ClientHourlyStat) -> dict[str, Any]:
         "denied": row.denied,
         "blocked": row.blocked,
         "servfail": row.servfail,
+    }
+
+
+def _zero_client_row(hour_iso: str, client: str) -> dict[str, Any]:
+    return {
+        "id": None,
+        "hour_start": hour_iso,
+        "client": client,
+        "total": 0,
+        "forwarded": 0,
+        "cached": 0,
+        "overridden": 0,
+        "denied": 0,
+        "blocked": 0,
+        "servfail": 0,
     }
 
 
@@ -73,18 +111,24 @@ def list_client_stats(
     offset: int = 0,
     client: str | None = None,
     hours: int | None = None,
+    fill: bool = False,
 ) -> list[dict[str, Any]]:
+    now = datetime.now()
     stmt = select(ClientHourlyStat)
     if client is not None:
         stmt = stmt.where(ClientHourlyStat.client == client)
     if hours is not None:
-        stmt = stmt.where(ClientHourlyStat.hour_start >= datetime.now() - timedelta(hours=hours))
+        stmt = stmt.where(ClientHourlyStat.hour_start >= now - timedelta(hours=hours))
     stmt = stmt.order_by(ClientHourlyStat.hour_start.desc(), ClientHourlyStat.client)
-    if limit is not None:
+    if limit is not None and not fill:
         stmt = stmt.limit(limit).offset(offset)
     with session_scope() as session:
         rows = session.scalars(stmt).all()
-        return [_to_dict(row) for row in rows]
+        dicts = [_to_dict(row) for row in rows]
+    if fill and hours is not None and client is not None:
+        client_ip: str = client
+        dicts = _fill_hours(dicts, hours, now, lambda key: _zero_client_row(key, client_ip))
+    return dicts
 
 
 def count_client_stats(client: str | None = None, hours: int | None = None) -> int:
@@ -111,10 +155,25 @@ def _site_to_dict(row: Any) -> dict[str, Any]:
     }
 
 
+def _zero_site_row(hour_iso: str) -> dict[str, Any]:
+    return {
+        "hour_start": hour_iso,
+        "total": 0,
+        "forwarded": 0,
+        "cached": 0,
+        "overridden": 0,
+        "denied": 0,
+        "blocked": 0,
+        "servfail": 0,
+        "clients": 0,
+    }
+
+
 def list_site_hourly_stats(
-    limit: int | None = None, offset: int = 0, hours: int | None = None
+    limit: int | None = None, offset: int = 0, hours: int | None = None, fill: bool = False
 ) -> list[dict[str, Any]]:
     """Hourly totals summed across all clients (one row per hour)."""
+    now = datetime.now()
     stmt = select(
         ClientHourlyStat.hour_start,
         func.sum(ClientHourlyStat.total).label("total"),
@@ -127,13 +186,16 @@ def list_site_hourly_stats(
         func.count(func.distinct(ClientHourlyStat.client)).label("clients"),
     )
     if hours is not None:
-        stmt = stmt.where(ClientHourlyStat.hour_start >= datetime.now() - timedelta(hours=hours))
+        stmt = stmt.where(ClientHourlyStat.hour_start >= now - timedelta(hours=hours))
     stmt = stmt.group_by(ClientHourlyStat.hour_start).order_by(ClientHourlyStat.hour_start.desc())
-    if limit is not None:
+    if limit is not None and not fill:
         stmt = stmt.limit(limit).offset(offset)
     with session_scope() as session:
         rows = session.execute(stmt).all()
-        return [_site_to_dict(row) for row in rows]
+        dicts = [_site_to_dict(row) for row in rows]
+    if fill and hours is not None:
+        dicts = _fill_hours(dicts, hours, now, _zero_site_row)
+    return dicts
 
 
 def count_site_hourly_stats(hours: int | None = None) -> int:

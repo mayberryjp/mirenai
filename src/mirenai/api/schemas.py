@@ -11,6 +11,7 @@ from mirenai.domain.policy import VALID_ACTIONS, WILDCARD
 
 _VALID_PROTOCOLS = {"udp", "tcp"}
 _VALID_DEFAULT_ACTIONS = {"deny", "forward"}
+_VALID_MODES = {"forward", "deny", "blocklist", "default"}
 
 
 def _check_client(value: str) -> str:
@@ -96,6 +97,19 @@ class PolicyUpdate(BaseModel):
     def _validate_action(cls, value: str | None) -> str | None:
         if value is not None and value not in VALID_ACTIONS:
             raise ValueError(f"action must be one of {sorted(VALID_ACTIONS)}")
+        return value
+
+
+class ClientModeUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: str
+
+    @field_validator("mode")
+    @classmethod
+    def _validate_mode(cls, value: str) -> str:
+        if value not in _VALID_MODES:
+            raise ValueError(f"mode must be one of {sorted(_VALID_MODES)}")
         return value
 
 

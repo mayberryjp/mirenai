@@ -5,6 +5,7 @@ from typing import Any
 from bottle import Bottle, request, response
 
 from mirenai.api.routes.blocklists import register_blocklist_routes
+from mirenai.api.routes.client_modes import register_client_mode_routes
 from mirenai.api.routes.health import register_health_routes
 from mirenai.api.routes.hosts import register_host_routes
 from mirenai.api.routes.policies import register_policy_routes
@@ -27,6 +28,7 @@ def create_app() -> Bottle:
 
     register_health_routes(app)
     register_policy_routes(app)
+    register_client_mode_routes(app)
     register_upstream_routes(app)
     register_query_routes(app)
     register_settings_routes(app)

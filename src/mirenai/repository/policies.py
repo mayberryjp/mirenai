@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 
 from mirenai.db import session_scope
-from mirenai.domain.policy import PolicyRule
+from mirenai.domain.policy import WILDCARD, PolicyRule
 from mirenai.repository.models import Policy
 
 
@@ -89,6 +89,36 @@ def delete_policy(policy_id: int) -> bool:
             return False
         session.delete(policy)
         return True
+
+
+def get_client_mode(client: str) -> dict[str, Any]:
+    """Return a client's mode: the action of its ``(client, "*")`` row, else ``default``."""
+    with session_scope() as session:
+        row = session.scalars(
+            select(Policy).where(Policy.client == client, Policy.domain == WILDCARD)
+        ).first()
+        if row is None:
+            return {"client": client, "mode": "default", "policy_id": None}
+        return {"client": client, "mode": row.action, "policy_id": row.id}
+
+
+def set_client_mode(client: str, mode: str) -> dict[str, Any]:
+    """Upsert the client's wildcard policy to ``mode``; ``default`` removes the row."""
+    with session_scope() as session:
+        row = session.scalars(
+            select(Policy).where(Policy.client == client, Policy.domain == WILDCARD)
+        ).first()
+        if mode == "default":
+            if row is not None:
+                session.delete(row)
+            return {"client": client, "mode": "default", "policy_id": None}
+        if row is None:
+            row = Policy(client=client, domain=WILDCARD, action=mode)
+            session.add(row)
+        else:
+            row.action = mode
+        session.flush()
+        return {"client": client, "mode": row.action, "policy_id": row.id}
 
 
 def load_rules() -> list[PolicyRule]:
