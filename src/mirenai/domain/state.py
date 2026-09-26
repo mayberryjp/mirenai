@@ -33,7 +33,7 @@ class RuntimeSettings:
     cache_min_ttl: int = 0
     cache_max_entries: int = 10000
     forward_timeout: float = 5.0
-    default_action: str = "deny"
+    default_action: str = "forward"
     refresh_seconds: int = 10
     query_flush_seconds: int = 5
     log_queries: bool = True

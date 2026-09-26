@@ -148,3 +148,7 @@ def init_db() -> None:
     Base.metadata.create_all(get_engine())
     BlocklistBase.metadata.create_all(get_blocklist_engine())
     HostsBase.metadata.create_all(get_hosts_engine())
+
+    from mirenai.repository.upstreams import ensure_default_upstream
+
+    ensure_default_upstream()

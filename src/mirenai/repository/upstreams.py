@@ -99,3 +99,15 @@ def load_upstreams() -> list[UpstreamServer]:
             )
             for row in rows
         ]
+
+
+def ensure_default_upstream() -> None:
+    """Seed a single default upstream (Google 8.8.8.8) when none exist.
+
+    Lets a fresh install forward queries out of the box. Idempotent: skipped once
+    any upstream is configured.
+    """
+    with session_scope() as session:
+        if session.scalars(select(Upstream.id)).first() is not None:
+            return
+        session.add(Upstream(name="Google Public DNS", address="8.8.8.8", port=53, protocol="udp"))

@@ -332,7 +332,7 @@ always present.
 | `cache_min_ttl`      | int    | `0`      | lower clamp for cached TTLs (seconds)             |
 | `cache_max_entries`  | int    | `10000`  | LRU capacity                                      |
 | `forward_timeout`    | float  | `5.0`    | upstream query timeout (seconds)                  |
-| `default_action`     | string | `"deny"` | applied when no policy matches; `deny` or `forward` |
+| `default_action`     | string | `"forward"` | applied when no policy matches; `deny` or `forward` |
 | `refresh_seconds`    | int    | `10`     | how often the DNS server reloads config           |
 | `query_flush_seconds`| int    | `5`      | how often query stats flush to the database       |
 | `log_queries`        | bool   | `true`   | enable/disable query logging                      |

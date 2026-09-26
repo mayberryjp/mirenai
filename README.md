@@ -6,6 +6,10 @@ return an override (sinkhole) answer, or deny with `NXDOMAIN`. A management API
 (and separate frontend) configures the policy table, upstream resolvers, cache
 behaviour, and exposes per-client query statistics.
 
+Out of the box a fresh install ships with `default_action = forward` and a single
+seeded upstream (`8.8.8.8`), so it resolves for every client immediately; lock it
+down by adding policies or switching `default_action` to `deny`.
+
 ## How screening works
 
 Every decision comes from a single **policy** table. Each row screens one
@@ -25,16 +29,16 @@ table:
 - **Deny everything** — `(host, *, deny)` returns `NXDOMAIN` for every lookup.
 - **Allow all but the DNS blocklist** — `(host, *, blocklist)` forwards every
   lookup **except** names on an enabled blocklist, which return `NXDOMAIN`.
-- **Allow some** — one row per allowed domain (`forward` or `override`), and no
-  wildcard row for that host. Anything not listed falls through to the default
-  action, which is `deny` (`NXDOMAIN`).
+- **Allow some (whitelist)** — one row per allowed domain (`forward` or
+  `override`) plus a `(host, *, deny)` wildcard, so anything not listed returns
+  `NXDOMAIN`.
 
 `forward`, `override`, `deny`, and `blocklist` can all be mixed per host and per
 domain, and different clients can get different answers for the same name.
 
 **Match precedence:** the most specific domain wins (exact > longest
 `*.suffix` > `*`); ties are broken in favour of an exact client over `*`. When no
-row matches at all, the configured `default_action` applies (default `deny`).
+row matches at all, the configured `default_action` applies (default `forward`).
 
 ### Example
 
