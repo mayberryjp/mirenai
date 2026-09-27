@@ -19,7 +19,6 @@ from mirenai.domain.cache import TTLCache
 from mirenai.domain.clientrequests import ClientRequestBuffer
 from mirenai.domain.clientstats import ClientStatsBuffer
 from mirenai.domain.policy import (
-    ACTION_BLOCKLIST,
     ACTION_DENY,
     ACTION_OVERRIDE,
     PolicyRule,
@@ -81,7 +80,9 @@ class DnsResolver:
         elif action == ACTION_DENY:
             reply = self._deny(request)
             result = "deny"
-        elif action == ACTION_BLOCKLIST and is_blocked(self._state.blocklist, qname):
+        elif client_ip not in self._state.blocklist_excluded and is_blocked(
+            self._state.blocklist, qname
+        ):
             reply = self._deny(request)
             result = "blocklist"
         else:

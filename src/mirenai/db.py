@@ -150,6 +150,7 @@ def init_db() -> None:
     HostsBase.metadata.create_all(get_hosts_engine())
 
     _ensure_hosts_icon_column()
+    _ensure_hosts_excluded_column()
 
     from mirenai.repository.upstreams import ensure_default_upstream
 
@@ -167,3 +168,18 @@ def _ensure_hosts_icon_column() -> None:
         columns = {row[1] for row in conn.execute(text("PRAGMA table_info(hosts)"))}
         if columns and "icon" not in columns:
             conn.execute(text("ALTER TABLE hosts ADD COLUMN icon VARCHAR(255)"))
+
+
+def _ensure_hosts_excluded_column() -> None:
+    """Add ``hosts.excluded_from_blocklist`` to a localhosts database created before it.
+
+    ``create_all`` never alters existing tables and this project has no migration
+    tool, so a pre-existing ``hosts`` table needs a one-off ``ALTER TABLE``.
+    Idempotent and a no-op on fresh databases (where ``create_all`` already added it).
+    """
+    with get_hosts_engine().begin() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(hosts)"))}
+        if columns and "excluded_from_blocklist" not in columns:
+            conn.execute(
+                text("ALTER TABLE hosts ADD COLUMN excluded_from_blocklist BOOLEAN NOT NULL DEFAULT 0")
+            )

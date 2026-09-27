@@ -31,3 +31,8 @@ def test_host_update_icon_too_long_rejected() -> None:
 def test_host_update_rejects_unknown_field() -> None:
     with pytest.raises(ValidationError):
         HostUpdate.model_validate({"nope": "x"})
+
+
+def test_host_update_accepts_excluded_from_blocklist() -> None:
+    assert HostUpdate.model_validate({"excluded_from_blocklist": True}).excluded_from_blocklist is True
+    assert HostUpdate.model_validate({}).excluded_from_blocklist is None

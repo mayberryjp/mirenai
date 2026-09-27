@@ -14,6 +14,7 @@ def _make_resolver(
     settings: RuntimeSettings | None = None,
     upstreams: list[UpstreamServer] | None = None,
     blocklist: frozenset[str] | None = None,
+    blocklist_excluded: frozenset[str] | None = None,
 ) -> DnsResolver:
     effective = settings or RuntimeSettings()
     state = RuntimeState(
@@ -21,6 +22,7 @@ def _make_resolver(
         load_policies=lambda: policies,
         load_upstreams=lambda: upstreams or [],
         load_blocklist=lambda: blocklist or frozenset(),
+        load_blocklist_excluded=lambda: blocklist_excluded or frozenset(),
     )
     buffer = QueryBuffer(flush=lambda rows: None, flush_seconds=5)
     stats = ClientStatsBuffer(flush=lambda rows: None, flush_seconds=3600)
@@ -87,6 +89,29 @@ def test_blocklist_action_forwards_unlisted_domain() -> None:
         blocklist=frozenset({"ads.example"}),
     )
     reply = resolver.handle(DNSRecord.question("good.example", "A"), "1.2.3.4")
+    assert reply.header.rcode == RCODE.SERVFAIL
+
+
+def test_blocklist_applies_to_plain_forward_client() -> None:
+    # Blocklist is global: a plain forwarding client is blocked with no blocklist action.
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        RuntimeSettings(cache_enabled=False),
+        blocklist=frozenset({"ads.example"}),
+    )
+    reply = resolver.handle(DNSRecord.question("ads.example", "A"), "1.2.3.4")
+    assert reply.header.rcode == RCODE.NXDOMAIN
+
+
+def test_excluded_client_bypasses_blocklist() -> None:
+    # excluded_from_blocklist -> the blocked name is not denied; it forwards (SERVFAIL w/o upstreams).
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        RuntimeSettings(cache_enabled=False),
+        blocklist=frozenset({"ads.example"}),
+        blocklist_excluded=frozenset({"1.2.3.4"}),
+    )
+    reply = resolver.handle(DNSRecord.question("ads.example", "A"), "1.2.3.4")
     assert reply.header.rcode == RCODE.SERVFAIL
 
 

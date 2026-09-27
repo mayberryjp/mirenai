@@ -52,3 +52,11 @@ def register_stats_routes(app: Bottle) -> None:
         client = request.query.get("client") or None
         rows = requests_repo.list_new_domain_counts(client=client)
         return {"status": "ok", "stats": rows, "total": len(rows)}
+
+    @app.get("/stats/new-domains/recent")
+    def recent_new_domains() -> dict[str, Any]:
+        limit, err = read_int_query("limit")
+        if err is not None:
+            return err
+        rows = requests_repo.list_recent_new_domains(limit=limit if limit is not None else 100)
+        return {"status": "ok", "domains": rows, "total": len(rows)}

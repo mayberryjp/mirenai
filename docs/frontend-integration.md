@@ -354,10 +354,16 @@ Validation: `default_action` must be `deny` or `forward`. Unknown keys are rejec
 Client devices seen by the DNS server, stored in a separate `localhosts.db`
 database. The DNS server auto-records one row per source IP on every query
 (incrementing `query_count` and refreshing `last_seen`); there is **no create
-endpoint**. The editable fields are `device_name` and `icon`; everything else is
-server-maintained. When a client is first seen it is also seeded with an explicit
-wildcard policy (see [§7.10](#710-client-mode-simplified)) and, if a Sando API is
-configured, its `device_name`/`icon` are synced from Sando automatically.
+endpoint**. The editable fields are `device_name`, `icon`, and
+`excluded_from_blocklist`; everything else is server-maintained. When a client is
+first seen it is also seeded with an explicit wildcard policy (see
+[§7.10](#710-client-mode-simplified)) and, if a Sando API is configured, its
+`device_name`/`icon` are synced from Sando automatically.
+
+**Blocklist filtering is global:** every client's DNS queries are filtered
+through the enabled blocklists by default. Set `excluded_from_blocklist` to
+`true` on a host to exempt that client entirely — none of its lookups are then
+subject to the blocklist.
 
 **Host object:**
 | field         | type              | notes                                              |
@@ -366,6 +372,7 @@ configured, its `device_name`/`icon` are synced from Sando automatically.
 | `ip`          | string            | source IP (unique); server-recorded                |
 | `device_name` | string \| null    | operator-assigned label; `null` until set          |
 | `icon`        | string \| null    | icon key (e.g. from Sando); `null` until set        |
+| `excluded_from_blocklist` | bool  | when `true`, this client's queries bypass the blocklist (default `false`) |
 | `query_count` | int               | total queries seen from this IP; server-maintained |
 | `first_seen`  | string (datetime) | server-recorded                                    |
 | `last_seen`   | string (datetime) | server-maintained                                  |
@@ -379,11 +386,11 @@ List, paginated. → `{ "status": "ok", "hosts": [...], "total": N }`
 → `200 { "status": "ok", "host": {...} }` or `404 not_found`.
 
 #### `PUT /hosts/{id}`
-Set or clear the device name and/or icon. → `200 { "status": "ok", "host": {...} }` or `404 not_found`.
+Set or clear the device name and/or icon, or toggle blocklist exclusion. → `200 { "status": "ok", "host": {...} }` or `404 not_found`.
 ```json
-{ "device_name": "living-room-tv", "icon": "television_icon" }
+{ "device_name": "living-room-tv", "icon": "television_icon", "excluded_from_blocklist": true }
 ```
-Validation: `device_name` and `icon` are each a string of at most 255 characters, or `null`. Whitespace is trimmed; an empty/blank string is stored as `null` (so sending `""` or `null` clears that field). Either field may be sent on its own. `ip`, `query_count`, `first_seen`, `last_seen`, and `id` are read-only — sending any of them (or any other key) is rejected with `422`.
+Validation: `device_name` and `icon` are each a string of at most 255 characters, or `null`. Whitespace is trimmed; an empty/blank string is stored as `null` (so sending `""` or `null` clears that field). `excluded_from_blocklist` is a boolean (`null` is ignored). Any field may be sent on its own. `ip`, `query_count`, `first_seen`, `last_seen`, and `id` are read-only — sending any of them (or any other key) is rejected with `422`.
 
 #### `POST /hosts/{id}/sync`
 Sync this host's `device_name` and `icon` from the configured Sando instance (looks the host's IP up in Sando and copies its friendly name and icon). → `200 { "status": "ok", "host": {...} }` with the updated host.
@@ -476,6 +483,27 @@ domains come back with `new_domains: 0` (no gaps to fill client-side).
 **Filter (optional):** `client=<ip>` — only that client's rows (a dense 20-row series for that client).
 
 Ordering: by `hour_start` descending, then `client`. Because it's rebuilt hourly, the current in-progress hour and any brand-new client appear at the next materialize tick (up to ~1h lag). Example: `GET /stats/new-domains?client=10.0.0.5`.
+
+---
+
+#### `GET /stats/new-domains/recent`
+The flat feed behind `GET /stats/new-domains`: the most recently first-seen
+`(client, domain)` pairs, newest first. One row per `(client, domain)` dated by
+the earliest `first_seen` across query types (so `a.com/A` and `a.com/AAAA`
+collapse to a single row). Read-only.
+
+**Row object:**
+| field        | type              | notes                                                   |
+| ------------ | ----------------- | ------------------------------------------------------- |
+| `client`     | string            | source IP                                               |
+| `domain`     | string            | the queried name                                        |
+| `first_seen` | string (datetime) | earliest time this client first saw this domain         |
+
+→ `{ "status": "ok", "domains": [...], "total": N }` where `total` is the number of rows returned.
+
+**Limit (optional):** `limit=<int>` — caps the number of rows (defaults to `100`, the top-100 most recent). A non-integer value returns `422`.
+
+Ordering: by `first_seen` descending. Example: `GET /stats/new-domains/recent` (top 100) or `GET /stats/new-domains/recent?limit=25`.
 
 ---
 

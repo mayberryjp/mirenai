@@ -144,3 +144,29 @@ def list_new_domain_counts(client: str | None = None) -> list[dict[str, Any]]:
             }
             for row in rows
         ]
+
+
+def list_recent_new_domains(limit: int = 100) -> list[dict[str, Any]]:
+    """List the most recently first-seen ``(client, domain)`` pairs, newest first.
+
+    One row per ``(client, domain)`` dated by the earliest ``first_seen`` across
+    query types, ordered by that timestamp descending and capped at ``limit``
+    (the top-N most recently discovered domains).
+    """
+    first_seen = func.min(ClientRequest.first_seen)
+    stmt = (
+        select(ClientRequest.client, ClientRequest.domain, first_seen.label("first_seen"))
+        .group_by(ClientRequest.client, ClientRequest.domain)
+        .order_by(first_seen.desc())
+        .limit(limit)
+    )
+    with session_scope() as session:
+        rows = session.execute(stmt).all()
+        return [
+            {
+                "client": row.client,
+                "domain": row.domain,
+                "first_seen": row.first_seen.isoformat(),
+            }
+            for row in rows
+        ]

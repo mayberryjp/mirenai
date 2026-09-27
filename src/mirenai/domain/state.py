@@ -43,6 +43,7 @@ SettingsLoader = Callable[[], RuntimeSettings]
 PolicyLoader = Callable[[], list[PolicyRule]]
 UpstreamLoader = Callable[[], list[UpstreamServer]]
 BlocklistLoader = Callable[[], frozenset[str]]
+BlocklistExcludedLoader = Callable[[], frozenset[str]]
 
 
 class RuntimeState:
@@ -52,16 +53,19 @@ class RuntimeState:
         load_policies: PolicyLoader,
         load_upstreams: UpstreamLoader,
         load_blocklist: BlocklistLoader,
+        load_blocklist_excluded: BlocklistExcludedLoader,
     ) -> None:
         self._load_settings = load_settings
         self._load_policies = load_policies
         self._load_upstreams = load_upstreams
         self._load_blocklist = load_blocklist
+        self._load_blocklist_excluded = load_blocklist_excluded
         self._lock = threading.RLock()
         self._settings = RuntimeSettings()
         self._policies: list[PolicyRule] = []
         self._upstreams: list[UpstreamServer] = []
         self._blocklist: frozenset[str] = frozenset()
+        self._blocklist_excluded: frozenset[str] = frozenset()
         self._stop = threading.Event()
         self.reload()
 
@@ -70,11 +74,13 @@ class RuntimeState:
         new_policies = self._load_policies()
         new_upstreams = self._load_upstreams()
         new_blocklist = self._load_blocklist()
+        new_blocklist_excluded = self._load_blocklist_excluded()
         with self._lock:
             self._settings = new_settings
             self._policies = new_policies
             self._upstreams = new_upstreams
             self._blocklist = new_blocklist
+            self._blocklist_excluded = new_blocklist_excluded
 
     @property
     def settings(self) -> RuntimeSettings:
@@ -95,6 +101,11 @@ class RuntimeState:
     def blocklist(self) -> frozenset[str]:
         with self._lock:
             return self._blocklist
+
+    @property
+    def blocklist_excluded(self) -> frozenset[str]:
+        with self._lock:
+            return self._blocklist_excluded
 
     def start_refresh(self) -> None:
         thread = threading.Thread(target=self._refresh_loop, name="config-refresh", daemon=True)

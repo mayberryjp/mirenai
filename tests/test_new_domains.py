@@ -98,3 +98,57 @@ def test_new_domains_route_envelope_and_filter(monkeypatch: pytest.MonkeyPatch) 
 
     app.get("/stats/new-domains?client=10.0.0.5")
     assert captured["client"] == "10.0.0.5"
+
+
+def test_recent_new_domains_orders_by_first_seen(temp_config_db: None) -> None:
+    now = datetime.now()
+    _add("10.0.0.5", "old.com", "A", now - timedelta(hours=3))
+    _add("10.0.0.5", "a.com", "A", now - timedelta(hours=2))
+    _add("10.0.0.5", "a.com", "AAAA", now - timedelta(hours=1))  # same domain, later qtype
+    _add("10.0.0.9", "new.com", "A", now - timedelta(minutes=5))
+
+    rows = repo.list_recent_new_domains()
+
+    # newest first_seen first; (client, domain) collapsed to its earliest first_seen
+    assert [(r["client"], r["domain"]) for r in rows] == [
+        ("10.0.0.9", "new.com"),
+        ("10.0.0.5", "a.com"),
+        ("10.0.0.5", "old.com"),
+    ]
+    a_com = next(r for r in rows if r["domain"] == "a.com")
+    assert a_com["first_seen"] == (now - timedelta(hours=2)).isoformat()
+
+
+def test_recent_new_domains_respects_limit(temp_config_db: None) -> None:
+    now = datetime.now()
+    for i in range(5):
+        _add("10.0.0.5", f"d{i}.com", "A", now - timedelta(minutes=i))
+
+    rows = repo.list_recent_new_domains(limit=3)
+
+    assert len(rows) == 3
+    assert [r["domain"] for r in rows] == ["d0.com", "d1.com", "d2.com"]
+
+
+def test_recent_new_domains_route_envelope_and_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, int] = {}
+
+    def _fake(limit: int = 100) -> list[dict[str, object]]:
+        captured["limit"] = limit
+        return [{"client": "10.0.0.5", "domain": "a.com", "first_seen": "2026-09-27T09:00:00"}]
+
+    monkeypatch.setattr(repo, "list_recent_new_domains", _fake)
+    app = TestApp(create_app())
+
+    resp = app.get("/stats/new-domains/recent")
+    assert resp.status_code == 200
+    assert resp.json["status"] == "ok"
+    assert resp.json["total"] == 1
+    assert resp.json["domains"][0]["domain"] == "a.com"
+    assert captured["limit"] == 100  # default "top recent 100"
+
+    app.get("/stats/new-domains/recent?limit=25")
+    assert captured["limit"] == 25
+
+    resp = app.get("/stats/new-domains/recent?limit=oops", status=422)
+    assert resp.status_code == 422

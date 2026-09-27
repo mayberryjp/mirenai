@@ -29,6 +29,7 @@ def _to_dict(host: Host) -> dict[str, Any]:
         "ip": host.ip,
         "device_name": host.device_name,
         "icon": host.icon,
+        "excluded_from_blocklist": host.excluded_from_blocklist,
         "query_count": host.query_count,
         "first_seen": host.first_seen.isoformat(),
         "last_seen": host.last_seen.isoformat(),
@@ -38,6 +39,13 @@ def _to_dict(host: Host) -> dict[str, Any]:
 def load_known_hosts() -> set[str]:
     with hosts_session_scope() as session:
         return set(session.scalars(select(Host.ip)).all())
+
+
+def load_blocklist_excluded() -> frozenset[str]:
+    """IPs whose queries bypass the blocklist (``excluded_from_blocklist`` is set)."""
+    stmt = select(Host.ip).where(Host.excluded_from_blocklist.is_(True))
+    with hosts_session_scope() as session:
+        return frozenset(session.scalars(stmt).all())
 
 
 def record_hosts(counts: dict[str, int]) -> None:
@@ -85,6 +93,8 @@ def update_host(host_id: int, data: dict[str, Any]) -> dict[str, Any] | None:
             host.device_name = data["device_name"]
         if "icon" in data:
             host.icon = data["icon"]
+        if data.get("excluded_from_blocklist") is not None:
+            host.excluded_from_blocklist = data["excluded_from_blocklist"]
         session.flush()
         return _to_dict(host)
 

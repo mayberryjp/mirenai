@@ -177,6 +177,7 @@ class HostUpdate(BaseModel):
 
     device_name: str | None = None
     icon: str | None = None
+    excluded_from_blocklist: bool | None = None
 
     @field_validator("device_name")
     @classmethod
