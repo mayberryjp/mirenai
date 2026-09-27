@@ -115,6 +115,37 @@ def test_excluded_client_bypasses_blocklist() -> None:
     assert reply.header.rcode == RCODE.SERVFAIL
 
 
+def test_aaaa_returns_nodata_when_ipv6_disabled() -> None:
+    # ipv6 disabled -> every AAAA query is answered NOERROR with no records (NODATA).
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        RuntimeSettings(ipv6_enabled=False),
+    )
+    reply = resolver.handle(DNSRecord.question("example.com", "AAAA"), "1.2.3.4")
+    assert reply.header.rcode == RCODE.NOERROR
+    assert len(reply.rr) == 0
+
+
+def test_a_query_unaffected_when_ipv6_disabled() -> None:
+    # Only AAAA is short-circuited; A still forwards (SERVFAIL without upstreams).
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        RuntimeSettings(ipv6_enabled=False, cache_enabled=False),
+    )
+    reply = resolver.handle(DNSRecord.question("example.com", "A"), "1.2.3.4")
+    assert reply.header.rcode == RCODE.SERVFAIL
+
+
+def test_aaaa_forwarded_when_ipv6_enabled() -> None:
+    # Default (ipv6 enabled) -> AAAA is not short-circuited; it forwards (SERVFAIL w/o upstreams).
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        RuntimeSettings(cache_enabled=False),
+    )
+    reply = resolver.handle(DNSRecord.question("example.com", "AAAA"), "1.2.3.4")
+    assert reply.header.rcode == RCODE.SERVFAIL
+
+
 def test_query_buffer_aggregates_counts() -> None:
     captured: list[QueryAgg] = []
     buffer = QueryBuffer(flush=captured.extend, flush_seconds=5)

@@ -310,6 +310,8 @@ Ordering: by `last_seen` descending, then `id`.
 #### `GET /queries`
 List, paginated. → `{ "status": "ok", "queries": [...], "total": N }`
 
+Optional `search=<text>` query param filters server-side to rows where **`client` OR `domain`** contains `<text>` (case-insensitive substring; `%`/`_` are matched literally). `total` reflects the filtered count, so pagination stays correct. Combine with `limit`/`offset` as usual.
+
 #### `DELETE /queries`
 Resets (deletes) **all** query statistics. → `{ "status": "ok", "deleted": <count> }` where `deleted` is the number of rows removed.
 
@@ -336,6 +338,7 @@ always present.
 | `refresh_seconds`    | int    | `10`     | how often the DNS server reloads config           |
 | `query_flush_seconds`| int    | `5`      | how often query stats flush to the database       |
 | `log_queries`        | bool   | `true`   | enable/disable query logging                      |
+| `ipv6_enabled`       | bool   | `true`   | when `false`, every AAAA (IPv6) query is answered `NOERROR`/NODATA so clients fall back to A |
 
 #### `GET /settings`
 → `{ "status": "ok", "settings": { /* all keys above */ } }`
@@ -506,6 +509,29 @@ collapse to a single row). Read-only.
 
 Ordering: by `first_seen` descending. Example: `GET /stats/new-domains/recent` (top 100) or `GET /stats/new-domains/recent?limit=25`.
 
+#### `GET /stats/runtime`
+A point-in-time snapshot of DNS-server runtime gauges (not time-bucketed). The
+DNS server samples these every `query_flush_seconds` and writes them to the
+database; this endpoint returns the latest values. Read-only.
+
+→ `{ "status": "ok", "stats": { ... }, "updated_at": "2026-09-28T12:34:56" | null }`
+
+`updated_at` is the time of the last flush and doubles as the DNS worker's
+heartbeat — a recent value means the worker is alive. Before the first flush
+(fresh install or DNS worker not yet running) `stats` is `{}` and `updated_at`
+is `null`.
+
+**Gauges (`stats` keys):**
+| key                 | notes                                                                 |
+| ------------------- | --------------------------------------------------------------------- |
+| `cache_size`        | entries currently held in the in-memory DNS cache (one entry per `(name, type, class)` response, not individual records) |
+| `cache_capacity`    | the cache's configured maximum entries (compare with `cache_size` for utilization) |
+| `blocklist_domains` | number of domains loaded into the running resolver's blocklist        |
+| `upstreams`         | number of configured upstream resolvers                               |
+| `policies`          | number of policy rules loaded                                         |
+
+Keys may be added over time — treat `stats` as an open map.
+
 ---
 
 ### 7.9 Client requests
@@ -581,6 +607,23 @@ Idempotent upsert — always `200` with the resulting mode object (no `201`, no 
 - This only touches the client's **wildcard** row. Per-domain exceptions added via `/policies` (allow or deny a specific name for this client) are left untouched, still take precedence over the mode, and do **not** change the client's mode.
 - For a **whitelist** client (allow only specific names), set the mode to `deny` (block all) and add per-domain `forward` rows via `/policies`.
 - `GET` can report `"mode": "override"` or `"blocklist"` if a client's wildcard row was set to one of those via the advanced `/policies` API; `PUT` only accepts `forward`/`deny`.
+
+---
+
+### 7.11 Cache control
+
+The DNS resolver keeps an in-memory cache of upstream answers (surfaced as the
+`cache_size` / `cache_capacity` gauges on `GET /stats/runtime`).
+
+#### `POST /cache/flush`
+Requests a flush of the DNS cache. → `{ "status": "ok", "requested_at": "2026-09-28T12:34:56" }`
+
+The cache lives in the DNS server process, so the flush is **not instantaneous**:
+the API records the request and the DNS server clears its cache the next time it
+polls, within `refresh_seconds` (default 10s). `requested_at` is the local-time
+timestamp recorded for the request. No request body is needed; repeated calls
+just update the pending request. If the DNS server isn't running there's nothing
+to clear — a freshly started server always begins with an empty cache.
 
 ---
 

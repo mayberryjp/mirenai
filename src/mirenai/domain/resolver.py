@@ -74,7 +74,10 @@ class DnsResolver:
         rule = select_policy(self._state.policies, client_ip, str(question.qname))
         action = rule.action if rule is not None else settings.default_action
 
-        if action == ACTION_OVERRIDE and rule is not None:
+        if question.qtype == QTYPE.AAAA and not settings.ipv6_enabled:
+            reply = self._nodata(request)
+            result = "nodata"
+        elif action == ACTION_OVERRIDE and rule is not None:
             reply = self._override(request, rule)
             result = "override"
         elif action == ACTION_DENY:
@@ -107,6 +110,11 @@ class DnsResolver:
         reply = request.reply()
         reply.header.rcode = RCODE.NXDOMAIN
         return reply
+
+    def _nodata(self, request: DNSRecord) -> DNSRecord:
+        # NOERROR with no answers (NODATA): the name exists but has no record of this
+        # type, so clients fall back to an A lookup instead of treating it as missing.
+        return request.reply()
 
     def _override(self, request: DNSRecord, rule: PolicyRule) -> DNSRecord:
         reply = request.reply()

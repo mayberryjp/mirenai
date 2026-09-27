@@ -63,3 +63,7 @@ class TTLCache(Generic[T]):
     def __len__(self) -> int:
         with self._lock:
             return len(self._data)
+
+    @property
+    def capacity(self) -> int:
+        return self._max_entries

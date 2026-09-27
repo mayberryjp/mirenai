@@ -33,3 +33,8 @@ def test_len_and_clear() -> None:
     assert len(cache) == 1
     cache.clear()
     assert len(cache) == 0
+
+
+def test_capacity_reports_max_entries() -> None:
+    assert TTLCache(42).capacity == 42
+    assert TTLCache(0).capacity == 1  # clamped to a minimum of 1

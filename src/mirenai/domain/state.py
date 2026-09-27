@@ -37,6 +37,7 @@ class RuntimeSettings:
     refresh_seconds: int = 10
     query_flush_seconds: int = 5
     log_queries: bool = True
+    ipv6_enabled: bool = True
 
 
 SettingsLoader = Callable[[], RuntimeSettings]

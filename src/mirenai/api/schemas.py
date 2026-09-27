@@ -216,6 +216,7 @@ class SettingsUpdate(BaseModel):
     refresh_seconds: int | None = None
     query_flush_seconds: int | None = None
     log_queries: bool | None = None
+    ipv6_enabled: bool | None = None
 
     @field_validator("default_action")
     @classmethod

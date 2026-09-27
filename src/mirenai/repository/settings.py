@@ -17,7 +17,7 @@ from mirenai.db import session_scope
 from mirenai.domain.state import RuntimeSettings
 from mirenai.repository.models import AppSetting
 
-_BOOL_KEYS = frozenset({"cache_enabled", "log_queries"})
+_BOOL_KEYS = frozenset({"cache_enabled", "log_queries", "ipv6_enabled"})
 _INT_KEYS = frozenset(
     {
         "cache_max_ttl",

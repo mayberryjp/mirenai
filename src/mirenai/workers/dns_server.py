@@ -26,11 +26,13 @@ from mirenai.domain.state import RuntimeState
 from mirenai.integrations.sando import sync_host_from_sando
 from mirenai.logging import configure_logging, get_logger
 from mirenai.repository.blocklists import load_blocklist_domains
+from mirenai.repository.cache_control import get_cache_flush_request
 from mirenai.repository.client_requests import materialize_new_domains, record_client_requests
 from mirenai.repository.client_stats import record_client_stats
 from mirenai.repository.hosts import load_blocklist_excluded, load_known_hosts, record_hosts
 from mirenai.repository.policies import ensure_client_policy, load_rules
 from mirenai.repository.query_log import record_queries
+from mirenai.repository.runtime_stats import record_runtime_stats
 from mirenai.repository.settings import load_runtime_settings
 from mirenai.repository.upstreams import load_upstreams
 
@@ -51,6 +53,48 @@ def _run_new_domain_materializer(stop: threading.Event) -> None:
             log.exception("new-domain materialize failed")
         if stop.wait(_NEW_DOMAIN_MATERIALIZE_SECONDS):
             return
+
+
+def _runtime_snapshot(cache: TTLCache[bytes], state: RuntimeState) -> dict[str, int]:
+    """Sample the current point-in-time runtime gauges."""
+    return {
+        "cache_size": len(cache),
+        "cache_capacity": cache.capacity,
+        "blocklist_domains": len(state.blocklist),
+        "upstreams": len(state.upstreams),
+        "policies": len(state.policies),
+    }
+
+
+def _run_runtime_stats(
+    cache: TTLCache[bytes], state: RuntimeState, interval: int, stop: threading.Event
+) -> None:
+    """Flush the runtime-gauge snapshot immediately, then every ``interval`` seconds."""
+    while True:
+        try:
+            record_runtime_stats(_runtime_snapshot(cache, state))
+        except Exception:
+            log.exception("runtime stats flush failed")
+        if stop.wait(interval):
+            return
+
+
+def _run_cache_flusher(cache: TTLCache[bytes], interval: int, stop: threading.Event) -> None:
+    """Clear the DNS cache whenever the API records a newer flush request."""
+    try:
+        last_seen = get_cache_flush_request()
+    except Exception:
+        last_seen = None
+    while not stop.wait(interval):
+        try:
+            requested = get_cache_flush_request()
+        except Exception:
+            log.exception("cache flush poll failed")
+            continue
+        if requested is not None and requested != last_seen:
+            cache.clear()
+            last_seen = requested
+            log.info("cache cleared (flush requested at %s)", requested)
 
 
 class ScreeningResolver(BaseResolver):  # type: ignore[misc]  # dnslib is untyped
@@ -148,6 +192,20 @@ def main() -> None:
         name="new-domain-materializer",
         daemon=True,
     ).start()
+    runtime_stats_stop = threading.Event()
+    threading.Thread(
+        target=_run_runtime_stats,
+        args=(cache, state, runtime.query_flush_seconds, runtime_stats_stop),
+        name="runtime-stats",
+        daemon=True,
+    ).start()
+    cache_flush_stop = threading.Event()
+    threading.Thread(
+        target=_run_cache_flusher,
+        args=(cache, runtime.refresh_seconds, cache_flush_stop),
+        name="cache-flusher",
+        daemon=True,
+    ).start()
     udp_server.start_thread()
     tcp_server.start_thread()
     log.info(
@@ -171,6 +229,8 @@ def main() -> None:
         requests.stop()
         hosts.stop()
         materialize_stop.set()
+        runtime_stats_stop.set()
+        cache_flush_stop.set()
 
 
 if __name__ == "__main__":

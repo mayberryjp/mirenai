@@ -95,6 +95,22 @@ class AppSetting(Base):
     )
 
 
+class RuntimeStat(Base):
+    """Point-in-time gauges sampled by the DNS server (cache size, blocklist size, ...).
+
+    A small key/value snapshot flushed on the query-flush interval; ``updated_at``
+    doubles as the DNS worker's heartbeat.
+    """
+
+    __tablename__ = "runtime_stats"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW, onupdate=_LOCAL_NOW
+    )
+
+
 class ClientHourlyStat(Base):
     """Per-client DNS query counts for one wall-clock hour, broken down by result.
 

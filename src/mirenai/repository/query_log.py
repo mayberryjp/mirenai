@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import ColumnElement, delete, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mirenai.db import session_scope
@@ -53,8 +53,28 @@ def record_queries(rows: list[QueryAgg]) -> None:
             session.execute(stmt)
 
 
-def list_queries(limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
+def _escape_like(value: str) -> str:
+    """Escape LIKE wildcards so user input matches literally."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _search_filter(search: str | None) -> ColumnElement[bool] | None:
+    if not search:
+        return None
+    term = f"%{_escape_like(search)}%"
+    return or_(
+        QueryLog.client.ilike(term, escape="\\"),
+        QueryLog.domain.ilike(term, escape="\\"),
+    )
+
+
+def list_queries(
+    limit: int | None = None, offset: int = 0, search: str | None = None
+) -> list[dict[str, Any]]:
     stmt = select(QueryLog).order_by(QueryLog.last_seen.desc(), QueryLog.id)
+    condition = _search_filter(search)
+    if condition is not None:
+        stmt = stmt.where(condition)
     if limit is not None:
         stmt = stmt.limit(limit).offset(offset)
     with session_scope() as session:
@@ -62,9 +82,13 @@ def list_queries(limit: int | None = None, offset: int = 0) -> list[dict[str, An
         return [_to_dict(row) for row in rows]
 
 
-def count_queries() -> int:
+def count_queries(search: str | None = None) -> int:
+    stmt = select(QueryLog.id)
+    condition = _search_filter(search)
+    if condition is not None:
+        stmt = stmt.where(condition)
     with session_scope() as session:
-        return len(session.scalars(select(QueryLog.id)).all())
+        return len(session.scalars(stmt).all())
 
 
 def reset_queries() -> int:

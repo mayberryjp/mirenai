@@ -5,6 +5,7 @@ from bottle import Bottle, request
 from mirenai.api.errors import read_int_query, read_pagination
 from mirenai.repository import client_requests as requests_repo
 from mirenai.repository import client_stats as repo
+from mirenai.repository import runtime_stats as runtime_repo
 
 
 def register_stats_routes(app: Bottle) -> None:
@@ -60,3 +61,7 @@ def register_stats_routes(app: Bottle) -> None:
             return err
         rows = requests_repo.list_recent_new_domains(limit=limit if limit is not None else 100)
         return {"status": "ok", "domains": rows, "total": len(rows)}
+
+    @app.get("/stats/runtime")
+    def runtime_stats() -> dict[str, Any]:
+        return {"status": "ok", **runtime_repo.load_runtime_stats()}
