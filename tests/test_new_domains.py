@@ -8,7 +8,7 @@ from mirenai import config, db
 from mirenai.api.app import create_app
 from mirenai.db import Base, session_scope
 from mirenai.repository import client_requests as repo
-from mirenai.repository.models import ClientRequest
+from mirenai.repository.models import ClientRequest, QueryLog
 
 
 @pytest.fixture()
@@ -32,6 +32,23 @@ def _add(client: str, domain: str, qtype: str, first_seen: datetime) -> None:
                 hits=1,
                 first_seen=first_seen,
                 last_seen=first_seen,
+            )
+        )
+
+
+def _add_query(
+    client: str, domain: str, qtype: str, last_action: str, last_seen: datetime
+) -> None:
+    with session_scope() as session:
+        session.add(
+            QueryLog(
+                client=client,
+                domain=domain,
+                qtype=qtype,
+                count=1,
+                last_action=last_action,
+                first_seen=last_seen,
+                last_seen=last_seen,
             )
         )
 
@@ -128,6 +145,22 @@ def test_recent_new_domains_respects_limit(temp_config_db: None) -> None:
 
     assert len(rows) == 3
     assert [r["domain"] for r in rows] == ["d0.com", "d1.com", "d2.com"]
+
+
+def test_recent_new_domains_includes_last_action(temp_config_db: None) -> None:
+    now = datetime.now()
+    _add("10.0.0.5", "a.com", "A", now - timedelta(hours=2))
+    _add("10.0.0.5", "a.com", "AAAA", now - timedelta(hours=1))
+    _add("10.0.0.5", "b.com", "A", now - timedelta(minutes=5))  # no query-log row
+    # newest last_seen across qtypes wins for the collapsed (client, domain) row
+    _add_query("10.0.0.5", "a.com", "A", "forward", now - timedelta(hours=2))
+    _add_query("10.0.0.5", "a.com", "AAAA", "blocklist", now - timedelta(minutes=1))
+
+    rows = repo.list_recent_new_domains()
+    actions = {r["domain"]: r["last_action"] for r in rows}
+
+    assert actions["a.com"] == "blocklist"
+    assert actions["b.com"] is None
 
 
 def test_recent_new_domains_route_envelope_and_limit(monkeypatch: pytest.MonkeyPatch) -> None:

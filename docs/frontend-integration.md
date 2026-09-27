@@ -493,11 +493,12 @@ the earliest `first_seen` across query types (so `a.com/A` and `a.com/AAAA`
 collapse to a single row). Read-only.
 
 **Row object:**
-| field        | type              | notes                                                   |
-| ------------ | ----------------- | ------------------------------------------------------- |
-| `client`     | string            | source IP                                               |
-| `domain`     | string            | the queried name                                        |
-| `first_seen` | string (datetime) | earliest time this client first saw this domain         |
+| field         | type              | notes                                                   |
+| ------------- | ----------------- | ------------------------------------------------------- |
+| `client`      | string            | source IP                                               |
+| `domain`      | string            | the queried name                                        |
+| `first_seen`  | string (datetime) | earliest time this client first saw this domain         |
+| `last_action` | string \| null    | action last recorded for this `(client, domain)` in the query log (`forward`/`override`/`deny`/`blocklist`), or `null` |
 
 → `{ "status": "ok", "domains": [...], "total": N }` where `total` is the number of rows returned.
 

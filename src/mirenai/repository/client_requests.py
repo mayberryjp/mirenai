@@ -15,7 +15,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mirenai.db import session_scope
 from mirenai.domain.clientrequests import ClientRequestAgg
-from mirenai.repository.models import ClientNewDomainStat, ClientRequest
+from mirenai.repository.models import ClientNewDomainStat, ClientRequest, QueryLog
 
 # How many one-hour intervals the new-domain view covers.
 NEW_DOMAIN_WINDOW_HOURS = 20
@@ -151,11 +151,28 @@ def list_recent_new_domains(limit: int = 100) -> list[dict[str, Any]]:
 
     One row per ``(client, domain)`` dated by the earliest ``first_seen`` across
     query types, ordered by that timestamp descending and capped at ``limit``
-    (the top-N most recently discovered domains).
+    (the top-N most recently discovered domains). ``last_action`` is the action
+    the query log last recorded for that ``(client, domain)`` (newest
+    ``last_seen`` across query types), or ``None`` when the query log has no row.
     """
     first_seen = func.min(ClientRequest.first_seen)
+    last_action = (
+        select(QueryLog.last_action)
+        .where(
+            QueryLog.client == ClientRequest.client,
+            QueryLog.domain == ClientRequest.domain,
+        )
+        .order_by(QueryLog.last_seen.desc(), QueryLog.id.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
     stmt = (
-        select(ClientRequest.client, ClientRequest.domain, first_seen.label("first_seen"))
+        select(
+            ClientRequest.client,
+            ClientRequest.domain,
+            first_seen.label("first_seen"),
+            last_action.label("last_action"),
+        )
         .group_by(ClientRequest.client, ClientRequest.domain)
         .order_by(first_seen.desc())
         .limit(limit)
@@ -167,6 +184,7 @@ def list_recent_new_domains(limit: int = 100) -> list[dict[str, Any]]:
                 "client": row.client,
                 "domain": row.domain,
                 "first_seen": row.first_seen.isoformat(),
+                "last_action": row.last_action,
             }
             for row in rows
         ]
