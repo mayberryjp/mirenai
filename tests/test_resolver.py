@@ -1,4 +1,5 @@
-from dnslib import QTYPE, RCODE, A, DNSRecord, RR
+import pytest
+from dnslib import QTYPE, RCODE, RR, A, DNSRecord
 
 from mirenai.domain.cache import TTLCache
 from mirenai.domain.clientrequests import ClientRequestBuffer
@@ -7,6 +8,7 @@ from mirenai.domain.policy import PolicyRule
 from mirenai.domain.querybuffer import QueryAgg, QueryBuffer
 from mirenai.domain.resolver import DnsResolver
 from mirenai.domain.state import RuntimeSettings, RuntimeState, UpstreamServer
+from mirenai.domain.upstreamstats import UpstreamRttAgg, UpstreamRttBuffer
 
 
 def _make_resolver(
@@ -15,6 +17,7 @@ def _make_resolver(
     upstreams: list[UpstreamServer] | None = None,
     blocklist: frozenset[str] | None = None,
     blocklist_excluded: frozenset[str] | None = None,
+    rtt: UpstreamRttBuffer | None = None,
 ) -> DnsResolver:
     effective = settings or RuntimeSettings()
     state = RuntimeState(
@@ -27,8 +30,27 @@ def _make_resolver(
     buffer = QueryBuffer(flush=lambda rows: None, flush_seconds=5)
     stats = ClientStatsBuffer(flush=lambda rows: None, flush_seconds=3600)
     requests = ClientRequestBuffer(flush=lambda rows: None, flush_seconds=3600)
+    rtt_buffer = rtt or UpstreamRttBuffer(flush=lambda rows: None, flush_seconds=3600)
     cache: TTLCache[bytes] = TTLCache(100)
-    return DnsResolver(state, cache, buffer, stats, requests)
+    return DnsResolver(state, cache, buffer, stats, requests, rtt_buffer)
+
+
+def test_forward_records_upstream_rtt(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[UpstreamRttAgg] = []
+    rtt = UpstreamRttBuffer(flush=captured.extend, flush_seconds=3600)
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        RuntimeSettings(cache_enabled=False),
+        upstreams=[UpstreamServer("1.1.1.1", 53, "udp", 100)],
+        rtt=rtt,
+    )
+    reply_bytes = DNSRecord.question("example.com", "A").reply().pack()
+    monkeypatch.setattr(DNSRecord, "send", lambda self, *a, **k: reply_bytes)
+    resolver.handle(DNSRecord.question("example.com", "A"), "10.0.0.1")
+    rtt.flush()
+    assert len(captured) == 1
+    assert captured[0].address == "1.1.1.1"
+    assert captured[0].samples == 1
 
 
 def test_deny_returns_nxdomain() -> None:

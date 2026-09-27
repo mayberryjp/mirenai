@@ -82,7 +82,7 @@ All errors use the envelope above. Map on `code` (stable string), not on the hum
 
 ## 5. Pagination
 
-List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/domains`, `/queries`, `/hosts`, `/stats`, `/stats/site`, `/requests`) accept **optional** `limit` and `offset` query parameters.
+List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/domains`, `/queries`, `/hosts`, `/stats`, `/stats/site`, `/stats/upstreams`, `/requests`) accept **optional** `limit` and `offset` query parameters.
 
 - **Neither supplied →** all rows are returned; `total` equals the number of rows in the response.
 - **Either supplied →** results are paginated; `total` is the **full count** across all rows (not the length of this page).
@@ -540,6 +540,30 @@ is `null`.
 | `policies`          | number of policy rules loaded                                         |
 
 Keys may be added over time — treat `stats` as an open map.
+
+#### `GET /stats/upstreams`
+Per-upstream forward round-trip time, bucketed by wall-clock hour — the feed for a
+latency graph. The DNS server times each successful forward and aggregates by
+`(hour, upstream address)`; buckets older than 500 hours are purged. Read-only.
+
+**Row object:**
+| field        | type              | notes                                                  |
+| ------------ | ----------------- | ------------------------------------------------------ |
+| `hour_start` | string (datetime) | top of the hour, e.g. `"2026-09-28T14:00:00"`          |
+| `address`    | string            | upstream resolver address (e.g. `8.8.8.8`)             |
+| `samples`    | int               | forwarded queries measured in that hour                |
+| `avg_ms`     | float \| null     | mean round-trip time (ms); `null` when `samples` is 0  |
+| `max_ms`     | float \| null     | worst round-trip time (ms); `null` when `samples` is 0 |
+
+→ `{ "status": "ok", "stats": [...], "total": N }`, ordered newest hour first.
+
+**Graph feed:** pass `hours=<n>` for a dense series — one row per hour per active
+upstream across the window, with empty hours null-filled (`samples: 0`, `avg_ms:
+null`, `max_ms: null`) so every line has a point at every hour. `limit`/`offset`
+are ignored in this mode. Add `address=<ip>` to restrict to a single upstream.
+
+**Plain list:** without `hours`, returns recent rows (optionally `limit`/`offset`,
+`total` is the matching row count), newest first — optionally filtered by `address`.
 
 ---
 

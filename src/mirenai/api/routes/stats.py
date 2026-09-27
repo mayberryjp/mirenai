@@ -6,6 +6,7 @@ from mirenai.api.errors import read_int_query, read_pagination
 from mirenai.repository import client_requests as requests_repo
 from mirenai.repository import client_stats as repo
 from mirenai.repository import runtime_stats as runtime_repo
+from mirenai.repository import upstream_stats as upstream_repo
 
 
 def register_stats_routes(app: Bottle) -> None:
@@ -65,3 +66,21 @@ def register_stats_routes(app: Bottle) -> None:
     @app.get("/stats/runtime")
     def runtime_stats() -> dict[str, Any]:
         return {"status": "ok", **runtime_repo.load_runtime_stats()}
+
+    @app.get("/stats/upstreams")
+    def upstream_rtt() -> dict[str, Any]:
+        paginate, limit, offset, err = read_pagination()
+        if err is not None:
+            return err
+        hours, err = read_int_query("hours")
+        if err is not None:
+            return err
+        address = request.query.get("address") or None
+        if hours is not None:
+            rows = upstream_repo.list_upstream_rtt(address=address, hours=hours, fill=True)
+            return {"status": "ok", "stats": rows, "total": len(rows)}
+        if not paginate:
+            rows = upstream_repo.list_upstream_rtt(address=address)
+            return {"status": "ok", "stats": rows, "total": len(rows)}
+        rows = upstream_repo.list_upstream_rtt(limit=limit, offset=offset, address=address)
+        return {"status": "ok", "stats": rows, "total": upstream_repo.count_upstream_rtt(address=address)}

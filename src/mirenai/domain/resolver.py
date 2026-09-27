@@ -27,6 +27,7 @@ from mirenai.domain.policy import (
 )
 from mirenai.domain.querybuffer import QueryBuffer
 from mirenai.domain.state import RuntimeSettings, RuntimeState, UpstreamServer
+from mirenai.domain.upstreamstats import UpstreamRttBuffer
 from mirenai.logging import get_logger
 
 log = get_logger("dns.resolver")
@@ -58,12 +59,14 @@ class DnsResolver:
         buffer: QueryBuffer,
         stats: ClientStatsBuffer,
         requests: ClientRequestBuffer,
+        rtt: UpstreamRttBuffer,
     ) -> None:
         self._state = state
         self._cache = cache
         self._buffer = buffer
         self._stats = stats
         self._requests = requests
+        self._rtt = rtt
 
     def handle(self, request: DNSRecord, client_ip: str) -> DNSRecord:
         question = request.q
@@ -179,6 +182,7 @@ class DnsResolver:
             return None
         for upstream in self._balanced_order(upstreams):
             try:
+                start = time.perf_counter()
                 use_tcp = upstream.protocol == "tcp"
                 raw = request.send(
                     upstream.address,
@@ -196,6 +200,7 @@ class DnsResolver:
                         timeout=settings.forward_timeout,
                     )
                     reply = DNSRecord.parse(raw)
+                self._rtt.add(upstream.address, (time.perf_counter() - start) * 1000)
                 return reply
             except Exception as exc:
                 log.warning(

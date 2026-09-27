@@ -13,6 +13,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Float,
     Integer,
     String,
     Text,
@@ -109,6 +110,28 @@ class RuntimeStat(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW, onupdate=_LOCAL_NOW
     )
+
+
+class UpstreamHourlyRtt(Base):
+    """Per-upstream forward round-trip time for one wall-clock hour.
+
+    Stores the sum and count so the hourly upsert stays exact as flush batches
+    accumulate; ``avg_ms`` is derived (``total_ms / samples``) on read.
+    """
+
+    __tablename__ = "upstream_hourly_rtt"
+    __table_args__ = (
+        UniqueConstraint("hour_start", "address", name="uq_upstream_rtt_hour_addr"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    hour_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    address: Mapped[str] = mapped_column(String(255), nullable=False)
+    samples: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    total_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    max_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
 
 class ClientHourlyStat(Base):

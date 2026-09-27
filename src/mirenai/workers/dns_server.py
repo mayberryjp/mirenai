@@ -23,6 +23,7 @@ from mirenai.domain.hosts import HostTracker
 from mirenai.domain.querybuffer import QueryBuffer
 from mirenai.domain.resolver import DnsResolver
 from mirenai.domain.state import RuntimeState
+from mirenai.domain.upstreamstats import UpstreamRttBuffer
 from mirenai.integrations.sando import sync_host_from_sando
 from mirenai.logging import configure_logging, get_logger
 from mirenai.repository.blocklists import load_blocklist_domains
@@ -34,6 +35,7 @@ from mirenai.repository.policies import ensure_client_policy, load_rules
 from mirenai.repository.query_log import record_queries
 from mirenai.repository.runtime_stats import record_runtime_stats
 from mirenai.repository.settings import load_runtime_settings
+from mirenai.repository.upstream_stats import record_upstream_rtt
 from mirenai.repository.upstreams import load_upstreams
 
 log = get_logger("dns.server")
@@ -163,6 +165,7 @@ def main() -> None:
     requests = ClientRequestBuffer(
         flush=record_client_requests, flush_seconds=_REQUESTS_FLUSH_SECONDS
     )
+    rtt = UpstreamRttBuffer(flush=record_upstream_rtt, flush_seconds=runtime.query_flush_seconds)
     hosts = HostTracker(
         flush=record_hosts,
         load=load_known_hosts,
@@ -170,7 +173,7 @@ def main() -> None:
         refresh_seconds=runtime.refresh_seconds,
         on_discover=_make_on_discover(state),
     )
-    core = DnsResolver(state, cache, buffer, stats, requests)
+    core = DnsResolver(state, cache, buffer, stats, requests, rtt)
     resolver = ScreeningResolver(core, hosts)
 
     udp_server = DNSServer(
@@ -184,6 +187,7 @@ def main() -> None:
     buffer.start()
     stats.start()
     requests.start()
+    rtt.start()
     hosts.start()
     materialize_stop = threading.Event()
     threading.Thread(
@@ -227,6 +231,7 @@ def main() -> None:
         buffer.stop()
         stats.stop()
         requests.stop()
+        rtt.stop()
         hosts.stop()
         materialize_stop.set()
         runtime_stats_stop.set()

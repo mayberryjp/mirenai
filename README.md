@@ -150,7 +150,7 @@ per-endpoint shapes.
 | Upstreams    | `GET/POST /upstreams`, `PUT/DELETE /upstreams/{id}`, `POST /upstreams/{id}/check` (RTT probe)         |
 | Blocklists   | `GET/POST /blocklists`, `GET/PUT/DELETE /blocklists/{id}`, `GET /blocklists/{id}/domains`, `POST /blocklists/{id}/refresh` |
 | Query log    | `GET /queries` (paginated, `?search=` by client or domain), `DELETE /queries`                        |
-| Stats        | `GET /stats`, `GET /stats/site`, `GET /stats/new-domains`, `GET /stats/new-domains/recent`, `GET /stats/runtime` |
+| Stats        | `GET /stats`, `GET /stats/site`, `GET /stats/new-domains`, `GET /stats/new-domains/recent`, `GET /stats/runtime`, `GET /stats/upstreams` |
 | Requests     | `GET /requests` — top `(client, domain, qtype)` objects                                              |
 | Cache        | `POST /cache/flush`                                                                                   |
 | Settings     | `GET/PUT /settings`                                                                                   |
