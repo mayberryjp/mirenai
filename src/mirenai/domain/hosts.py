@@ -17,6 +17,7 @@ log = get_logger("dns.hosts")
 
 HostFlush = Callable[[dict[str, int]], None]
 HostLoader = Callable[[], set[str]]
+DiscoverCallback = Callable[[set[str]], None]
 
 
 class HostTracker:
@@ -26,20 +27,25 @@ class HostTracker:
         load: HostLoader,
         flush_seconds: int,
         refresh_seconds: int,
+        on_discover: DiscoverCallback | None = None,
     ) -> None:
         self._flush_fn = flush
         self._load_fn = load
+        self._on_discover = on_discover
         self._flush_seconds = max(1, flush_seconds)
         self._refresh_seconds = max(1, refresh_seconds)
         self._lock = threading.Lock()
         self._pending: dict[str, int] = {}
+        self._pending_new: set[str] = set()
         self._known: set[str] = set()
         self._stop = threading.Event()
 
     def record(self, ip: str) -> None:
         with self._lock:
             self._pending[ip] = self._pending.get(ip, 0) + 1
-            self._known.add(ip)
+            if ip not in self._known:
+                self._known.add(ip)
+                self._pending_new.add(ip)
 
     @property
     def known_hosts(self) -> set[str]:
@@ -54,14 +60,20 @@ class HostTracker:
 
     def flush(self) -> None:
         with self._lock:
-            if not self._pending:
-                return
             snapshot = self._pending
+            discovered = self._pending_new
             self._pending = {}
-        try:
-            self._flush_fn(snapshot)
-        except Exception:
-            log.exception("host flush failed")
+            self._pending_new = set()
+        if snapshot:
+            try:
+                self._flush_fn(snapshot)
+            except Exception:
+                log.exception("host flush failed")
+        if discovered and self._on_discover is not None:
+            try:
+                self._on_discover(discovered)
+            except Exception:
+                log.exception("host discovery callback failed")
 
     def start(self) -> None:
         threading.Thread(target=self._flush_loop, name="host-flush", daemon=True).start()

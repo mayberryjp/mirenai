@@ -40,6 +40,16 @@ domain, and different clients can get different answers for the same name.
 `*.suffix` > `*`); ties are broken in favour of an exact client over `*`. When no
 row matches at all, the configured `default_action` applies (default `forward`).
 
+### New clients
+
+The first time a client is seen, it is given an explicit wildcard row
+`(client, *, <default_action>)` replicating the current site-wide default (allow
+all or block all). Flipping a client between allow-all and block-all is done via
+`/clients/{ip}/mode`; per-domain exceptions are added via `/policies` and do not
+change the client's mode. If `SANDO_API_URL` is set, the client's `device_name`
+and `icon` are also synced from [Sando](https://github.com/mayberryjp/sando) on
+discovery (and on demand via `POST /hosts/{id}/sync`).
+
 ### Example
 
 ```text
@@ -148,6 +158,7 @@ database. All variables are set in `docker-compose.yml`.
 | `DNS_LISTEN_ADDRESS`  | `0.0.0.0`   | DNS bind address                 |
 | `DNS_PORT`            | `53`        | DNS port (UDP + TCP)             |
 | `LOG_LEVEL`           | `INFO`      | log level                        |
+| `SANDO_API_URL`       | *(empty)*   | base URL of a [Sando](https://github.com/mayberryjp/sando) instance to sync client hostnames/icons from; empty disables it |
 | `TZ`                  | `Asia/Tokyo` | container time zone       |
 
 ## Local runbook

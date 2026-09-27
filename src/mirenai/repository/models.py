@@ -200,6 +200,7 @@ class Host(HostsBase):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     ip: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     device_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    icon: Mapped[str | None] = mapped_column(String(255), nullable=True)
     query_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     first_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW

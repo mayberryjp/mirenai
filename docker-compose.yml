@@ -10,6 +10,9 @@ services:
       DNS_LISTEN_ADDRESS: 0.0.0.0
       DNS_PORT: "53"
       LOG_LEVEL: INFO
+      # Optional: base URL of a Sando instance to sync client hostnames/icons from.
+      # Leave empty to disable. Example: http://192.168.1.10:8044
+      SANDO_API_URL: ""
       TZ: Asia/Tokyo
     cap_add:
       # Required so the non-root user can bind privileged DNS port 53.

@@ -28,5 +28,8 @@ class Settings(BaseSettings):
 
     log_level: str = Field("INFO", validation_alias="LOG_LEVEL")
 
+    # Base URL of a Sando instance used to sync client hostnames/icons. Empty disables it.
+    sando_api_url: str = Field("", validation_alias="SANDO_API_URL")
+
 
 settings = Settings()

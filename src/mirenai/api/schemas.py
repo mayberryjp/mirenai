@@ -11,7 +11,7 @@ from mirenai.domain.policy import VALID_ACTIONS, WILDCARD
 
 _VALID_PROTOCOLS = {"udp", "tcp"}
 _VALID_DEFAULT_ACTIONS = {"deny", "forward"}
-_VALID_MODES = {"forward", "deny", "blocklist", "default"}
+_VALID_MODES = {"forward", "deny"}
 
 
 def _check_client(value: str) -> str:
@@ -176,6 +176,7 @@ class HostUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     device_name: str | None = None
+    icon: str | None = None
 
     @field_validator("device_name")
     @classmethod
@@ -187,6 +188,18 @@ class HostUpdate(BaseModel):
             return None
         if len(trimmed) > 255:
             raise ValueError("device_name must be at most 255 characters")
+        return trimmed
+
+    @field_validator("icon")
+    @classmethod
+    def _validate_icon(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        if len(trimmed) > 255:
+            raise ValueError("icon must be at most 255 characters")
         return trimmed
 
 

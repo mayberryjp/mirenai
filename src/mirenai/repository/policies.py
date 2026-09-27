@@ -9,6 +9,7 @@ from sqlalchemy import select
 from mirenai.db import session_scope
 from mirenai.domain.policy import WILDCARD, PolicyRule
 from mirenai.repository.models import Policy
+from mirenai.repository.settings import load_runtime_settings
 
 
 def _to_dict(policy: Policy) -> dict[str, Any]:
@@ -92,26 +93,26 @@ def delete_policy(policy_id: int) -> bool:
 
 
 def get_client_mode(client: str) -> dict[str, Any]:
-    """Return a client's mode: the action of its ``(client, "*")`` row, else ``default``."""
+    """Return a client's mode: the action of its ``(client, "*")`` row.
+
+    A client with no wildcard row falls back to the global ``default_action``
+    (a client is normally given an explicit row the first time it is seen).
+    """
     with session_scope() as session:
         row = session.scalars(
             select(Policy).where(Policy.client == client, Policy.domain == WILDCARD)
         ).first()
         if row is None:
-            return {"client": client, "mode": "default", "policy_id": None}
+            return {"client": client, "mode": load_runtime_settings().default_action, "policy_id": None}
         return {"client": client, "mode": row.action, "policy_id": row.id}
 
 
 def set_client_mode(client: str, mode: str) -> dict[str, Any]:
-    """Upsert the client's wildcard policy to ``mode``; ``default`` removes the row."""
+    """Upsert the client's wildcard policy to ``mode`` (``forward`` or ``deny``)."""
     with session_scope() as session:
         row = session.scalars(
             select(Policy).where(Policy.client == client, Policy.domain == WILDCARD)
         ).first()
-        if mode == "default":
-            if row is not None:
-                session.delete(row)
-            return {"client": client, "mode": "default", "policy_id": None}
         if row is None:
             row = Policy(client=client, domain=WILDCARD, action=mode)
             session.add(row)
@@ -119,6 +120,22 @@ def set_client_mode(client: str, mode: str) -> dict[str, Any]:
             row.action = mode
         session.flush()
         return {"client": client, "mode": row.action, "policy_id": row.id}
+
+
+def ensure_client_policy(client: str, action: str) -> None:
+    """Seed a newly seen client's wildcard policy replicating the site default.
+
+    Gives every discovered client an explicit ``(client, "*", action)`` row so a
+    later change to the global ``default_action`` does not silently change what an
+    existing client does. Idempotent: does nothing when a wildcard row exists.
+    """
+    with session_scope() as session:
+        exists = session.scalars(
+            select(Policy.id).where(Policy.client == client, Policy.domain == WILDCARD)
+        ).first()
+        if exists is not None:
+            return
+        session.add(Policy(client=client, domain=WILDCARD, action=action))
 
 
 def load_rules() -> list[PolicyRule]:

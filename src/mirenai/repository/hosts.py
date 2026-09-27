@@ -22,6 +22,7 @@ def _to_dict(host: Host) -> dict[str, Any]:
         "id": host.id,
         "ip": host.ip,
         "device_name": host.device_name,
+        "icon": host.icon,
         "query_count": host.query_count,
         "first_seen": host.first_seen.isoformat(),
         "last_seen": host.last_seen.isoformat(),
@@ -76,6 +77,22 @@ def update_host(host_id: int, data: dict[str, Any]) -> dict[str, Any] | None:
             return None
         if "device_name" in data:
             host.device_name = data["device_name"]
+        if "icon" in data:
+            host.icon = data["icon"]
+        session.flush()
+        return _to_dict(host)
+
+
+def update_host_by_ip(ip: str, data: dict[str, Any]) -> dict[str, Any] | None:
+    """Update an existing host addressed by IP (used by the Sando sync)."""
+    with hosts_session_scope() as session:
+        host = session.scalars(select(Host).where(Host.ip == ip)).first()
+        if host is None:
+            return None
+        if "device_name" in data:
+            host.device_name = data["device_name"]
+        if "icon" in data:
+            host.icon = data["icon"]
         session.flush()
         return _to_dict(host)
 

@@ -354,8 +354,10 @@ Validation: `default_action` must be `deny` or `forward`. Unknown keys are rejec
 Client devices seen by the DNS server, stored in a separate `localhosts.db`
 database. The DNS server auto-records one row per source IP on every query
 (incrementing `query_count` and refreshing `last_seen`); there is **no create
-endpoint**. The only editable field is `device_name` — everything else is
-server-maintained.
+endpoint**. The editable fields are `device_name` and `icon`; everything else is
+server-maintained. When a client is first seen it is also seeded with an explicit
+wildcard policy (see [§7.10](#710-client-mode-simplified)) and, if a Sando API is
+configured, its `device_name`/`icon` are synced from Sando automatically.
 
 **Host object:**
 | field         | type              | notes                                              |
@@ -363,6 +365,7 @@ server-maintained.
 | `id`          | int               |                                                    |
 | `ip`          | string            | source IP (unique); server-recorded                |
 | `device_name` | string \| null    | operator-assigned label; `null` until set          |
+| `icon`        | string \| null    | icon key (e.g. from Sando); `null` until set        |
 | `query_count` | int               | total queries seen from this IP; server-maintained |
 | `first_seen`  | string (datetime) | server-recorded                                    |
 | `last_seen`   | string (datetime) | server-maintained                                  |
@@ -376,11 +379,17 @@ List, paginated. → `{ "status": "ok", "hosts": [...], "total": N }`
 → `200 { "status": "ok", "host": {...} }` or `404 not_found`.
 
 #### `PUT /hosts/{id}`
-Set or clear the device name. → `200 { "status": "ok", "host": {...} }` or `404 not_found`.
+Set or clear the device name and/or icon. → `200 { "status": "ok", "host": {...} }` or `404 not_found`.
 ```json
-{ "device_name": "living-room-tv" }
+{ "device_name": "living-room-tv", "icon": "television_icon" }
 ```
-Validation: `device_name` is a string of at most 255 characters, or `null`. Whitespace is trimmed; an empty/blank string is stored as `null` (so sending `""` or `null` both clear the name). `ip`, `query_count`, `first_seen`, `last_seen`, and `id` are read-only — sending any of them (or any other key) is rejected with `422`.
+Validation: `device_name` and `icon` are each a string of at most 255 characters, or `null`. Whitespace is trimmed; an empty/blank string is stored as `null` (so sending `""` or `null` clears that field). Either field may be sent on its own. `ip`, `query_count`, `first_seen`, `last_seen`, and `id` are read-only — sending any of them (or any other key) is rejected with `422`.
+
+#### `POST /hosts/{id}/sync`
+Sync this host's `device_name` and `icon` from the configured Sando instance (looks the host's IP up in Sando and copies its friendly name and icon). → `200 { "status": "ok", "host": {...} }` with the updated host.
+- `404 not_found` — the host id does not exist, **or** Sando has no record for the host's IP (`detail` carries the IP).
+- `503 not_configured` — no Sando API is configured (`SANDO_API_URL` is unset).
+- `502 upstream_error` — Sando could not be reached or returned an unexpected reply; `detail` explains why.
 
 #### `DELETE /hosts/{id}`
 → `200 { "status": "ok", "deleted": <id> }` or `404 not_found`. (The DNS server will re-create the row on the device's next query.)
@@ -484,38 +493,42 @@ default?” toggle. A client's **mode** is just its wildcard policy row `(client
 has to list `/policies` or juggle `POST`/`PUT`/`DELETE`. The response is a flat
 object (fields at the top level, not under a resource key).
 
+There are exactly two modes — **allow all** and **block all**. Every client that
+has been seen has an explicit wildcard row (seeded on first sight from the global
+`default_action`), so switching modes just flips that row.
+
 **Modes:**
-| `mode`      | Meaning                                              | Backing policy row           |
-| ----------- | ---------------------------------------------------- | ---------------------------- |
-| `forward`   | Allow everything (forward all queries)               | `(client, "*", "forward")`   |
-| `deny`      | Block everything (`NXDOMAIN`)                        | `(client, "*", "deny")`      |
-| `blocklist` | Forward all, but block names on an enabled blocklist | `(client, "*", "blocklist")` |
-| `default`   | No client-wide rule — inherit the global `default_action` setting | *(no wildcard row)* |
+| `mode`    | Meaning                                | Backing policy row         |
+| --------- | -------------------------------------- | -------------------------- |
+| `forward` | Allow all (forward every query)        | `(client, "*", "forward")` |
+| `deny`    | Block all (`NXDOMAIN` for every query) | `(client, "*", "deny")`    |
 
 **Mode object:**
 | field       | type          | notes                                                         |
 | ----------- | ------------- | ------------------------------------------------------------- |
 | `client`    | string        | the IP from the path                                          |
 | `mode`      | string        | one of the modes above                                        |
-| `policy_id` | int \| null   | id of the backing wildcard policy, or `null` for `default`    |
+| `policy_id` | int \| null   | id of the backing wildcard policy, or `null` if none exists yet |
 
 #### `GET /clients/{ip}/mode`
 → `200 { "status": "ok", "client": "10.4.10.20", "mode": "deny", "policy_id": 7 }`
 
-`{ip}` must be a valid IP address (else `422 validation_error`). A never-configured client returns `"mode": "default"`, `"policy_id": null`.
+`{ip}` must be a valid IP address (else `422 validation_error`). A client with no
+wildcard row yet reports the global `default_action` as its `mode` with
+`"policy_id": null`.
 
 #### `PUT /clients/{ip}/mode`
 Idempotent upsert — always `200` with the resulting mode object (no `201`, no `409`, so you never check whether the row already exists).
 ```json
 { "mode": "forward" }
 ```
-- `mode` is required and must be one of `forward`, `deny`, `blocklist`, `default`. An invalid mode or any unknown field → `422 validation_error`.
-- `forward`/`deny`/`blocklist` create or update the client's `(client, "*")` policy; `default` deletes it (the client then follows the global `default_action`).
+- `mode` is required and must be `forward` (allow all) or `deny` (block all). An invalid mode or any unknown field → `422 validation_error`.
+- Creates or updates the client's `(client, "*")` policy.
 
 **Notes:**
-- This only touches the client's **wildcard** row. Per-domain policies for the client (exceptions added via `/policies`) are left untouched and still take precedence over the mode.
-- For a **whitelist** client (allow only specific names), keep the mode at `default` (or `deny`) and add per-domain `forward` rows via `/policies` — that pattern is intentionally not a single mode.
-- `GET` can report `"mode": "override"` if a client's wildcard row was set to `override` via the advanced `/policies` API; `PUT` does not accept `override` (it needs a response IP — use `/policies`).
+- This only touches the client's **wildcard** row. Per-domain exceptions added via `/policies` (allow or deny a specific name for this client) are left untouched, still take precedence over the mode, and do **not** change the client's mode.
+- For a **whitelist** client (allow only specific names), set the mode to `deny` (block all) and add per-domain `forward` rows via `/policies`.
+- `GET` can report `"mode": "override"` or `"blocklist"` if a client's wildcard row was set to one of those via the advanced `/policies` API; `PUT` only accepts `forward`/`deny`.
 
 ---
 
@@ -524,7 +537,7 @@ Idempotent upsert — always `200` with the resulting mode object (no `201`, no 
 | Enum              | Allowed values                                      | Used by                      |
 | ----------------- | --------------------------------------------------- | ---------------------------- |
 | Policy `action`   | `forward`, `override`, `deny`, `blocklist`          | policies                     |
-| Client `mode`     | `forward`, `deny`, `blocklist`, `default`           | /clients/{ip}/mode           |
+| Client `mode`     | `forward` (allow all), `deny` (block all)           | /clients/{ip}/mode           |
 | Upstream `protocol` | `udp`, `tcp`                                      | upstreams                    |
 | `default_action`  | `deny`, `forward`                                   | settings                     |
 

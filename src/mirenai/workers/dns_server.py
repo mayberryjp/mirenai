@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 from dnslib import RCODE
@@ -22,12 +23,13 @@ from mirenai.domain.hosts import HostTracker
 from mirenai.domain.querybuffer import QueryBuffer
 from mirenai.domain.resolver import DnsResolver
 from mirenai.domain.state import RuntimeState
+from mirenai.integrations.sando import sync_host_from_sando
 from mirenai.logging import configure_logging, get_logger
 from mirenai.repository.blocklists import load_blocklist_domains
 from mirenai.repository.client_requests import record_client_requests
 from mirenai.repository.client_stats import record_client_stats
 from mirenai.repository.hosts import load_known_hosts, record_hosts
-from mirenai.repository.policies import load_rules
+from mirenai.repository.policies import ensure_client_policy, load_rules
 from mirenai.repository.query_log import record_queries
 from mirenai.repository.settings import load_runtime_settings
 from mirenai.repository.upstreams import load_upstreams
@@ -71,6 +73,28 @@ def _build_state() -> RuntimeState:
             time.sleep(_DB_RETRY_SECONDS)
 
 
+def _make_on_discover(state: RuntimeState) -> Callable[[set[str]], None]:
+    """Return a callback run when new clients are first seen.
+
+    For each new client it seeds an explicit wildcard policy replicating the
+    current site default and syncs the host's name/icon from Sando (if enabled).
+    """
+
+    def _on_discover(ips: set[str]) -> None:
+        action = state.settings.default_action
+        for ip in ips:
+            try:
+                ensure_client_policy(ip, action)
+            except Exception:
+                log.exception("failed to seed policy for new client %s", ip)
+            try:
+                sync_host_from_sando(ip)
+            except Exception:
+                log.exception("failed to sync new client %s from sando", ip)
+
+    return _on_discover
+
+
 def main() -> None:
     configure_logging(settings.log_level)
 
@@ -87,6 +111,7 @@ def main() -> None:
         load=load_known_hosts,
         flush_seconds=runtime.query_flush_seconds,
         refresh_seconds=runtime.refresh_seconds,
+        on_discover=_make_on_discover(state),
     )
     core = DnsResolver(state, cache, buffer, stats, requests)
     resolver = ScreeningResolver(core, hosts)
