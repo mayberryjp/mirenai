@@ -84,6 +84,7 @@ def list_upstream_rtt(
     address: str | None = None,
     hours: int | None = None,
     fill: bool = False,
+    known_addresses: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     now = datetime.now()
     stmt = select(UpstreamHourlyRtt)
@@ -98,7 +99,12 @@ def list_upstream_rtt(
         rows = session.scalars(stmt).all()
         dicts = [_to_dict(row) for row in rows]
     if fill and hours is not None:
-        addresses = [address] if address is not None else sorted({r["address"] for r in dicts})
+        if address is not None:
+            addresses = [address]
+        else:
+            seen = {r["address"] for r in dicts}
+            seen.update(known_addresses or ())
+            addresses = sorted(seen)
         dicts = _fill_hours(dicts, hours, now, addresses)
     return dicts
 

@@ -7,6 +7,7 @@ from mirenai.repository import client_requests as requests_repo
 from mirenai.repository import client_stats as repo
 from mirenai.repository import runtime_stats as runtime_repo
 from mirenai.repository import upstream_stats as upstream_repo
+from mirenai.repository.upstreams import load_upstreams
 
 
 def register_stats_routes(app: Bottle) -> None:
@@ -77,7 +78,11 @@ def register_stats_routes(app: Bottle) -> None:
             return err
         address = request.query.get("address") or None
         if hours is not None:
-            rows = upstream_repo.list_upstream_rtt(address=address, hours=hours, fill=True)
+            # Include every configured upstream so newly-added / idle ones still graph.
+            known = None if address is not None else [u.address for u in load_upstreams()]
+            rows = upstream_repo.list_upstream_rtt(
+                address=address, hours=hours, fill=True, known_addresses=known
+            )
             return {"status": "ok", "stats": rows, "total": len(rows)}
         if not paginate:
             rows = upstream_repo.list_upstream_rtt(address=address)

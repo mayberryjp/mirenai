@@ -9,6 +9,7 @@ from mirenai.api.app import create_app
 from mirenai.db import Base
 from mirenai.domain.upstreamstats import UpstreamRttAgg, UpstreamRttBuffer
 from mirenai.repository import upstream_stats as repo
+from mirenai.repository import upstreams as upstreams_repo
 
 
 @pytest.fixture()
@@ -84,3 +85,21 @@ def test_route_envelope_and_bad_hours(temp_config_db: None) -> None:
     assert resp.json["stats"][0]["avg_ms"] == 20.0
     bad = app.get("/stats/upstreams?hours=abc", status=422)
     assert bad.json["code"] == "validation_error"
+
+
+def test_fill_seeds_known_addresses_with_no_rows(temp_config_db: None) -> None:
+    # No RTT rows at all, but a known address -> dense null series for it.
+    rows = repo.list_upstream_rtt(hours=3, fill=True, known_addresses=["9.9.9.9"])
+    assert rows and {r["address"] for r in rows} == {"9.9.9.9"}
+    assert all(r["samples"] == 0 and r["avg_ms"] is None and r["max_ms"] is None for r in rows)
+
+
+def test_route_gap_fills_configured_upstream_with_no_rows(temp_config_db: None) -> None:
+    # An upstream exists in config but has never been measured -> still graphs (null series).
+    upstreams_repo.create_upstream({"address": "9.9.9.9"})
+    app = TestApp(create_app())
+    resp = app.get("/stats/upstreams?hours=3")
+    assert resp.status_code == 200
+    assert resp.json["stats"], "expected a dense series for the configured upstream"
+    assert {r["address"] for r in resp.json["stats"]} == {"9.9.9.9"}
+    assert all(r["avg_ms"] is None for r in resp.json["stats"])

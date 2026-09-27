@@ -557,10 +557,14 @@ latency graph. The DNS server times each successful forward and aggregates by
 
 → `{ "status": "ok", "stats": [...], "total": N }`, ordered newest hour first.
 
-**Graph feed:** pass `hours=<n>` for a dense series — one row per hour per active
+**Graph feed:** pass `hours=<n>` for a dense series — one row per hour for every
 upstream across the window, with empty hours null-filled (`samples: 0`, `avg_ms:
-null`, `max_ms: null`) so every line has a point at every hour. `limit`/`offset`
-are ignored in this mode. Add `address=<ip>` to restrict to a single upstream.
+null`, `max_ms: null`) so every line has a point at every hour even when an
+upstream had no traffic. The upstream set is the union of every configured
+(enabled) upstream and any address with history in the window, so a newly-added
+or idle upstream still appears as a flat/empty line. `limit`/`offset` are ignored
+in this mode. Add `address=<ip>` to restrict to a single upstream (works even if
+it has no rows yet).
 
 **Plain list:** without `hours`, returns recent rows (optionally `limit`/`offset`,
 `total` is the matching row count), newest first — optionally filtered by `address`.
