@@ -26,7 +26,7 @@ from mirenai.domain.state import RuntimeState
 from mirenai.integrations.sando import sync_host_from_sando
 from mirenai.logging import configure_logging, get_logger
 from mirenai.repository.blocklists import load_blocklist_domains
-from mirenai.repository.client_requests import record_client_requests
+from mirenai.repository.client_requests import materialize_new_domains, record_client_requests
 from mirenai.repository.client_stats import record_client_stats
 from mirenai.repository.hosts import load_known_hosts, record_hosts
 from mirenai.repository.policies import ensure_client_policy, load_rules
@@ -39,6 +39,18 @@ log = get_logger("dns.server")
 _DB_RETRY_SECONDS = 3
 _STATS_FLUSH_SECONDS = 3600
 _REQUESTS_FLUSH_SECONDS = 3600
+_NEW_DOMAIN_MATERIALIZE_SECONDS = 3600
+
+
+def _run_new_domain_materializer(stop: threading.Event) -> None:
+    """Rebuild the dense new-domain hourly series immediately, then every hour."""
+    while True:
+        try:
+            materialize_new_domains()
+        except Exception:
+            log.exception("new-domain materialize failed")
+        if stop.wait(_NEW_DOMAIN_MATERIALIZE_SECONDS):
+            return
 
 
 class ScreeningResolver(BaseResolver):  # type: ignore[misc]  # dnslib is untyped
@@ -128,6 +140,13 @@ def main() -> None:
     stats.start()
     requests.start()
     hosts.start()
+    materialize_stop = threading.Event()
+    threading.Thread(
+        target=_run_new_domain_materializer,
+        args=(materialize_stop,),
+        name="new-domain-materializer",
+        daemon=True,
+    ).start()
     udp_server.start_thread()
     tcp_server.start_thread()
     log.info(
@@ -150,6 +169,7 @@ def main() -> None:
         stats.stop()
         requests.stop()
         hosts.stop()
+        materialize_stop.set()
 
 
 if __name__ == "__main__":

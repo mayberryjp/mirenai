@@ -3,6 +3,7 @@ from typing import Any
 from bottle import Bottle, request
 
 from mirenai.api.errors import read_int_query, read_pagination
+from mirenai.repository import client_requests as requests_repo
 from mirenai.repository import client_stats as repo
 
 
@@ -45,3 +46,9 @@ def register_stats_routes(app: Bottle) -> None:
         rows = repo.list_site_hourly_stats(limit=limit, offset=offset)
         total = repo.count_site_hourly_stats()
         return {"status": "ok", "stats": rows, "total": total}
+
+    @app.get("/stats/new-domains")
+    def new_domain_stats() -> dict[str, Any]:
+        client = request.query.get("client") or None
+        rows = requests_repo.list_new_domain_counts(client=client)
+        return {"status": "ok", "stats": rows, "total": len(rows)}

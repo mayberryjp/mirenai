@@ -10,11 +10,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from mirenai.db import hosts_session_scope
-from mirenai.repository.models import Host
+from mirenai.db import hosts_session_scope, session_scope
+from mirenai.repository.models import (
+    ClientHourlyStat,
+    ClientRequest,
+    Host,
+    Policy,
+    QueryLog,
+)
 
 
 def _to_dict(host: Host) -> dict[str, Any]:
@@ -102,5 +108,12 @@ def delete_host(host_id: int) -> bool:
         host = session.get(Host, host_id)
         if host is None:
             return False
+        ip = host.ip
         session.delete(host)
-        return True
+    # Stats, requests, query-log and policies live in the separate config DB, keyed by IP.
+    with session_scope() as session:
+        session.execute(delete(ClientHourlyStat).where(ClientHourlyStat.client == ip))
+        session.execute(delete(ClientRequest).where(ClientRequest.client == ip))
+        session.execute(delete(QueryLog).where(QueryLog.client == ip))
+        session.execute(delete(Policy).where(Policy.client == ip))
+    return True

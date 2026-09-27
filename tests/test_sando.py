@@ -108,15 +108,24 @@ def test_sync_host_applies_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["device_name"] == "TV"
 
 
-def test_sync_host_skips_when_nothing_useful(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_sync_host_found_but_empty_still_returns_host(monkeypatch: pytest.MonkeyPatch) -> None:
     _configure(monkeypatch)
     monkeypatch.setattr(
         sando, "fetch_device", lambda ip: sando.SandoDevice(device_name=None, icon=None)
     )
-    calls: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(sando, "update_host_by_ip", lambda ip, data: calls.append((ip, data)))
-    assert sando.sync_host_from_sando("10.0.0.5") is None
-    assert calls == []
+    captured: dict[str, object] = {}
+
+    def _update(ip: str, data: dict[str, object]) -> dict[str, object]:
+        captured["ip"] = ip
+        captured["data"] = data
+        return {"id": 1, "ip": ip, "device_name": None, "icon": None}
+
+    monkeypatch.setattr(sando, "update_host_by_ip", _update)
+    result = sando.sync_host_from_sando("10.0.0.5")
+    # Sando HAS the host (just no name/icon) -> not a "missing" host; nothing to apply.
+    assert captured["data"] == {}
+    assert result is not None
+    assert result["ip"] == "10.0.0.5"
 
 
 def test_sync_host_unknown_device_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:

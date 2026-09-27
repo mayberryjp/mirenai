@@ -392,7 +392,7 @@ Sync this host's `device_name` and `icon` from the configured Sando instance (lo
 - `502 upstream_error` — Sando could not be reached or returned an unexpected reply; `detail` explains why.
 
 #### `DELETE /hosts/{id}`
-→ `200 { "status": "ok", "deleted": <id> }` or `404 not_found`. (The DNS server will re-create the row on the device's next query.)
+Completely removes the host: deletes the host row **and** every row keyed to its IP across the other tables — per-client hourly stats, request objects, query-log entries, and policies (including its client mode). → `200 { "status": "ok", "deleted": <id> }` or `404 not_found`. (The DNS server will re-create the host — and re-seed its default policy — on the device's next query.)
 
 ---
 
@@ -453,6 +453,29 @@ Site-wide hourly totals — the same counts **summed across all clients**, one r
 | `clients`    | int               | number of distinct clients active that hour        |
 
 Ordering: by `hour_start` descending. Example: `GET /stats/site?hours=168` for the last week of site-wide hourly totals.
+
+#### `GET /stats/new-domains`
+Counts of **newly-seen domains** per client, bucketed by wall-clock hour, over the
+last **20 one-hour intervals**. A domain is "new" for a client in the hour it was
+**first seen** (earliest `first_seen` across query types); each domain is counted
+once per client. Read-only.
+
+This is a **dense** series: the DNS worker materializes it hourly, writing a row
+for **every known client for every one of the 20 hours** — hours with no new
+domains come back with `new_domains: 0` (no gaps to fill client-side).
+
+**Row object:**
+| field         | type              | notes                                              |
+| ------------- | ----------------- | -------------------------------------------------- |
+| `hour_start`  | string (datetime) | top of the hour, e.g. `"2026-09-27T14:00:00"`      |
+| `client`      | string            | source IP                                          |
+| `new_domains` | int               | distinct domains this client first saw in the hour (0-filled) |
+
+→ `{ "status": "ok", "stats": [...], "total": N }` where `total` is the number of rows (≈ known clients × 20 hours).
+
+**Filter (optional):** `client=<ip>` — only that client's rows (a dense 20-row series for that client).
+
+Ordering: by `hour_start` descending, then `client`. Because it's rebuilt hourly, the current in-progress hour and any brand-new client appear at the next materialize tick (up to ~1h lag). Example: `GET /stats/new-domains?client=10.0.0.5`.
 
 ---
 

@@ -62,24 +62,30 @@ def fetch_device(ip: str) -> SandoDevice | None:
             payload = json.loads(resp.read().decode("utf-8"))
     except HTTPError as exc:
         if exc.code == 404:
+            log.debug("sando has no record for %s (GET %s)", ip, url)
             return None
         raise SandoError(f"HTTP {exc.code}") from exc
     except (URLError, TimeoutError, ValueError, OSError) as exc:
         raise SandoError(f"{type(exc).__name__}: {exc}") from exc
     if not isinstance(payload, dict) or payload.get("error"):
+        log.debug("sando returned no usable host for %s (GET %s)", ip, url)
         return None
-    return SandoDevice(
+    device = SandoDevice(
         device_name=_clean(payload.get("local_description")),
         icon=_clean(payload.get("icon")),
     )
+    log.debug("sando %s -> name=%r icon=%r", ip, device.device_name, device.icon)
+    return device
 
 
 def sync_host_from_sando(ip: str) -> dict[str, Any] | None:
     """Fetch ``ip`` from Sando and apply its name/icon to the stored host row.
 
-    Returns the updated host dict, or ``None`` when Sando is not configured, has
-    no record for the IP, supplies nothing useful, or the host row is absent.
-    Raises :class:`SandoError` on transport/protocol failures.
+    Returns the host dict whenever Sando **has a record** for ``ip`` — applying
+    whatever name/icon Sando holds, which may be neither — so a host that exists in
+    Sando but has no friendly name/icon is still a successful (no-op) sync, not a
+    "missing" host. Returns ``None`` only when Sando is not configured or has no
+    record for the IP. Raises :class:`SandoError` on transport/protocol failures.
     """
     if not settings.sando_api_url:
         return None
@@ -91,6 +97,4 @@ def sync_host_from_sando(ip: str) -> dict[str, Any] | None:
         data["device_name"] = device.device_name
     if device.icon is not None:
         data["icon"] = device.icon
-    if not data:
-        return None
     return update_host_by_ip(ip, data)

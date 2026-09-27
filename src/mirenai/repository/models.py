@@ -144,6 +144,25 @@ class ClientRequest(Base):
     )
 
 
+class ClientNewDomainStat(Base):
+    """Per-client count of newly-seen domains in one wall-clock hour.
+
+    Materialized hourly from ``client_requests`` as a *dense* series: every known
+    client gets a row for every hour in the window (zero when it saw no new domain
+    that hour), so the read endpoint needs no gap-filling.
+    """
+
+    __tablename__ = "client_new_domain_stats"
+    __table_args__ = (
+        UniqueConstraint("hour_start", "client", name="uq_client_new_domain_hour_client"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    hour_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    client: Mapped[str] = mapped_column(String(64), nullable=False)
+    new_domains: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+
 class Blocklist(Base):
     """Configuration for a downloadable DNS blocklist (name, source URL, cadence).
 
