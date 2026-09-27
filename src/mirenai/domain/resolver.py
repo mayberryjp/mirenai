@@ -179,13 +179,24 @@ class DnsResolver:
             return None
         for upstream in self._balanced_order(upstreams):
             try:
+                use_tcp = upstream.protocol == "tcp"
                 raw = request.send(
                     upstream.address,
                     upstream.port,
-                    tcp=upstream.protocol == "tcp",
+                    tcp=use_tcp,
                     timeout=settings.forward_timeout,
                 )
-                return DNSRecord.parse(raw)
+                reply = DNSRecord.parse(raw)
+                if reply.header.tc and not use_tcp:
+                    # Truncated over UDP: retry the same upstream over TCP for the full answer.
+                    raw = request.send(
+                        upstream.address,
+                        upstream.port,
+                        tcp=True,
+                        timeout=settings.forward_timeout,
+                    )
+                    reply = DNSRecord.parse(raw)
+                return reply
             except Exception as exc:
                 log.warning(
                     "upstream %s:%s (%s) failed: %s",

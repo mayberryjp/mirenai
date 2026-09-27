@@ -226,6 +226,15 @@ Partial update. → `200` or `404`. Same validators on supplied fields.
 #### `DELETE /upstreams/{id}`
 → `200 { "status": "ok", "deleted": <id> }` or `404`.
 
+#### `POST /upstreams/{id}/check`
+Probe the upstream: sends a sample `A` query (for `example.com`) through it and
+returns the round-trip time. → `200 { "status": "ok", "rtt_ms": 12.3 }`, or `404`
+if the id is unknown. If the upstream can't be reached or its reply can't be
+parsed (timeout, connection refused, ...), returns `502 upstream_error` with the
+reason in `detail`. Any reply counts as reachable, even an error rcode like
+`SERVFAIL`. No request body; the probe uses the upstream's own `protocol` and the
+current `forward_timeout` setting.
+
 ---
 
 ### 7.4 Blocklists

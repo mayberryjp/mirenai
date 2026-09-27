@@ -1,4 +1,4 @@
-from dnslib import RCODE, DNSRecord
+from dnslib import QTYPE, RCODE, A, DNSRecord, RR
 
 from mirenai.domain.cache import TTLCache
 from mirenai.domain.clientrequests import ClientRequestBuffer
@@ -144,6 +144,57 @@ def test_aaaa_forwarded_when_ipv6_enabled() -> None:
     )
     reply = resolver.handle(DNSRecord.question("example.com", "AAAA"), "1.2.3.4")
     assert reply.header.rcode == RCODE.SERVFAIL
+
+
+def test_truncated_udp_response_retries_over_tcp() -> None:
+    # UDP answer with TC=1 -> re-send the same upstream over TCP and use that full reply.
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        RuntimeSettings(cache_enabled=False),
+        upstreams=[UpstreamServer("9.9.9.9", 53, "udp", 0)],
+    )
+    request = DNSRecord.question("example.com", "A")
+    truncated = request.reply()
+    truncated.header.tc = 1
+    full = request.reply()
+    full.add_answer(RR(request.q.qname, QTYPE.A, ttl=60, rdata=A("1.2.3.4")))
+
+    sent_tcp: list[bool] = []
+
+    def fake_send(address: str, port: int, tcp: bool = False, timeout: float | None = None) -> bytes:
+        sent_tcp.append(tcp)
+        return (full if tcp else truncated).pack()
+
+    request.send = fake_send  # type: ignore[method-assign]
+    reply = resolver.handle(request, "1.2.3.4")
+
+    assert sent_tcp == [False, True]
+    assert reply.header.rcode == RCODE.NOERROR
+    assert [str(rr.rdata) for rr in reply.rr] == ["1.2.3.4"]
+
+
+def test_untruncated_udp_response_is_not_retried() -> None:
+    # A complete UDP answer (TC=0) is used as-is; no TCP re-send.
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        RuntimeSettings(cache_enabled=False),
+        upstreams=[UpstreamServer("9.9.9.9", 53, "udp", 0)],
+    )
+    request = DNSRecord.question("example.com", "A")
+    answer = request.reply()
+    answer.add_answer(RR(request.q.qname, QTYPE.A, ttl=60, rdata=A("1.2.3.4")))
+
+    sent_tcp: list[bool] = []
+
+    def fake_send(address: str, port: int, tcp: bool = False, timeout: float | None = None) -> bytes:
+        sent_tcp.append(tcp)
+        return answer.pack()
+
+    request.send = fake_send  # type: ignore[method-assign]
+    reply = resolver.handle(request, "1.2.3.4")
+
+    assert sent_tcp == [False]
+    assert [str(rr.rdata) for rr in reply.rr] == ["1.2.3.4"]
 
 
 def test_query_buffer_aggregates_counts() -> None:

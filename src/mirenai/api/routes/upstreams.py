@@ -4,7 +4,10 @@ from bottle import Bottle, response
 
 from mirenai.api.errors import error, parse_body, read_pagination
 from mirenai.api.schemas import UpstreamCreate, UpstreamUpdate
+from mirenai.domain.state import UpstreamServer
+from mirenai.domain.upstream_probe import ProbeError, probe_upstream
 from mirenai.repository import upstreams as repo
+from mirenai.repository.settings import load_runtime_settings
 
 
 def register_upstream_routes(app: Bottle) -> None:
@@ -50,3 +53,20 @@ def register_upstream_routes(app: Bottle) -> None:
         if not repo.delete_upstream(upstream_id):
             return error("not_found", "not found", 404)
         return {"status": "ok", "deleted": upstream_id}
+
+    @app.post("/upstreams/<upstream_id:int>/check")
+    def check_upstream(upstream_id: int) -> dict[str, Any]:
+        row = repo.get_upstream(upstream_id)
+        if row is None:
+            return error("not_found", "not found", 404)
+        server = UpstreamServer(
+            address=row["address"],
+            port=row["port"],
+            protocol=row["protocol"],
+            priority=row["priority"],
+        )
+        try:
+            rtt_ms = probe_upstream(server, load_runtime_settings().forward_timeout)
+        except ProbeError as exc:
+            return error("upstream_error", "upstream check failed", 502, str(exc))
+        return {"status": "ok", "rtt_ms": rtt_ms}
