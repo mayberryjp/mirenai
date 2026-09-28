@@ -26,19 +26,28 @@ def _configure(monkeypatch: pytest.MonkeyPatch, url: str = "http://sando.test") 
 
 def test_fetch_device_parses_name_and_icon(monkeypatch: pytest.MonkeyPatch) -> None:
     _configure(monkeypatch)
-    payload = json.dumps({"local_description": "Living Room TV", "icon": "television_icon"}).encode()
+    payload = json.dumps(
+        {
+            "local_description": "Living Room TV",
+            "icon": "television_icon",
+            "mac_address": "aa:bb:cc:dd:ee:ff",
+        }
+    ).encode()
     monkeypatch.setattr(sando, "urlopen", lambda *a, **k: _FakeResponse(payload))
     device = sando.fetch_device("10.0.0.5")
     assert device is not None
     assert device.device_name == "Living Room TV"
     assert device.icon == "television_icon"
+    assert device.mac_address == "aa:bb:cc:dd:ee:ff"
 
 
 def test_fetch_device_blank_fields_become_none(monkeypatch: pytest.MonkeyPatch) -> None:
     _configure(monkeypatch)
-    payload = json.dumps({"local_description": "  ", "icon": ""}).encode()
+    payload = json.dumps({"local_description": "  ", "icon": "", "mac_address": "  "}).encode()
     monkeypatch.setattr(sando, "urlopen", lambda *a, **k: _FakeResponse(payload))
-    assert sando.fetch_device("10.0.0.5") == sando.SandoDevice(device_name=None, icon=None)
+    assert sando.fetch_device("10.0.0.5") == sando.SandoDevice(
+        device_name=None, icon=None, mac_address=None
+    )
 
 
 def test_fetch_device_unknown_host_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -91,7 +100,11 @@ def test_sync_host_not_configured_is_noop(monkeypatch: pytest.MonkeyPatch) -> No
 def test_sync_host_applies_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     _configure(monkeypatch)
     monkeypatch.setattr(
-        sando, "fetch_device", lambda ip: sando.SandoDevice(device_name="TV", icon="tv_icon")
+        sando,
+        "fetch_device",
+        lambda ip: sando.SandoDevice(
+            device_name="TV", icon="tv_icon", mac_address="aa:bb:cc:dd:ee:ff"
+        ),
     )
     captured: dict[str, object] = {}
 
@@ -103,7 +116,11 @@ def test_sync_host_applies_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sando, "update_host_by_ip", _update)
     result = sando.sync_host_from_sando("10.0.0.5")
     assert captured["ip"] == "10.0.0.5"
-    assert captured["data"] == {"device_name": "TV", "icon": "tv_icon"}
+    assert captured["data"] == {
+        "device_name": "TV",
+        "icon": "tv_icon",
+        "mac_address": "aa:bb:cc:dd:ee:ff",
+    }
     assert result is not None
     assert result["device_name"] == "TV"
 
@@ -111,7 +128,9 @@ def test_sync_host_applies_fields(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_sync_host_found_but_empty_still_returns_host(monkeypatch: pytest.MonkeyPatch) -> None:
     _configure(monkeypatch)
     monkeypatch.setattr(
-        sando, "fetch_device", lambda ip: sando.SandoDevice(device_name=None, icon=None)
+        sando,
+        "fetch_device",
+        lambda ip: sando.SandoDevice(device_name=None, icon=None, mac_address=None),
     )
     captured: dict[str, object] = {}
 

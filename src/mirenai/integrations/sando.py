@@ -1,10 +1,10 @@
 """Client for the Sando network-inventory API.
 
-When ``SANDO_API_URL`` is set, mirenai can borrow the friendly name and icon that
-Sando already keeps for a client IP. Sando exposes a per-IP lookup at
+When ``SANDO_API_URL`` is set, mirenai can borrow the friendly name, icon and MAC
+address that Sando already keeps for a client IP. Sando exposes a per-IP lookup at
 ``GET {base}/api/localhosts/{ip}`` returning a JSON object; its
-``local_description`` maps to the host's ``device_name`` and its ``icon`` maps to
-the host's ``icon``.
+``local_description`` maps to the host's ``device_name``, its ``icon`` maps to the
+host's ``icon`` and its ``mac_address`` maps to the host's ``mac_address``.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ class SandoError(Exception):
 class SandoDevice:
     device_name: str | None
     icon: str | None
+    mac_address: str | None
 
 
 def _clean(value: Any) -> str | None:
@@ -73,17 +74,24 @@ def fetch_device(ip: str) -> SandoDevice | None:
     device = SandoDevice(
         device_name=_clean(payload.get("local_description")),
         icon=_clean(payload.get("icon")),
+        mac_address=_clean(payload.get("mac_address")),
     )
-    log.debug("sando %s -> name=%r icon=%r", ip, device.device_name, device.icon)
+    log.debug(
+        "sando %s -> name=%r icon=%r mac=%r",
+        ip,
+        device.device_name,
+        device.icon,
+        device.mac_address,
+    )
     return device
 
 
 def sync_host_from_sando(ip: str) -> dict[str, Any] | None:
-    """Fetch ``ip`` from Sando and apply its name/icon to the stored host row.
+    """Fetch ``ip`` from Sando and apply its name/icon/MAC to the stored host row.
 
     Returns the host dict whenever Sando **has a record** for ``ip`` — applying
-    whatever name/icon Sando holds, which may be neither — so a host that exists in
-    Sando but has no friendly name/icon is still a successful (no-op) sync, not a
+    whatever name/icon/MAC Sando holds, which may be none — so a host that exists in
+    Sando but has no friendly name/icon/MAC is still a successful (no-op) sync, not a
     "missing" host. Returns ``None`` only when Sando is not configured or has no
     record for the IP. Raises :class:`SandoError` on transport/protocol failures.
     """
@@ -97,4 +105,6 @@ def sync_host_from_sando(ip: str) -> dict[str, Any] | None:
         data["device_name"] = device.device_name
     if device.icon is not None:
         data["icon"] = device.icon
+    if device.mac_address is not None:
+        data["mac_address"] = device.mac_address
     return update_host_by_ip(ip, data)

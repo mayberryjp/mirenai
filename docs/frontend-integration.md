@@ -370,7 +370,7 @@ endpoint**. The editable fields are `device_name`, `icon`, and
 `excluded_from_blocklist`; everything else is server-maintained. When a client is
 first seen it is also seeded with an explicit wildcard policy (see
 [§7.10](#710-client-mode-simplified)) and, if a Sando API is configured, its
-`device_name`/`icon` are synced from Sando automatically.
+`device_name`/`icon`/`mac_address` are synced from Sando automatically.
 
 **Blocklist filtering is global:** every client's DNS queries are filtered
 through the enabled blocklists by default. Set `excluded_from_blocklist` to
@@ -384,6 +384,7 @@ subject to the blocklist.
 | `ip`          | string            | source IP (unique); server-recorded                |
 | `device_name` | string \| null    | operator-assigned label; `null` until set          |
 | `icon`        | string \| null    | icon key (e.g. from Sando); `null` until set        |
+| `mac_address` | string \| null    | MAC address synced from Sando; `null` until set     |
 | `excluded_from_blocklist` | bool  | when `true`, this client's queries bypass the blocklist (default `false`) |
 | `query_count` | int               | total queries seen from this IP; server-maintained |
 | `first_seen`  | string (datetime) | server-recorded                                    |
@@ -402,10 +403,10 @@ Set or clear the device name and/or icon, or toggle blocklist exclusion. → `20
 ```json
 { "device_name": "living-room-tv", "icon": "television_icon", "excluded_from_blocklist": true }
 ```
-Validation: `device_name` and `icon` are each a string of at most 255 characters, or `null`. Whitespace is trimmed; an empty/blank string is stored as `null` (so sending `""` or `null` clears that field). `excluded_from_blocklist` is a boolean (`null` is ignored). Any field may be sent on its own. `ip`, `query_count`, `first_seen`, `last_seen`, and `id` are read-only — sending any of them (or any other key) is rejected with `422`.
+Validation: `device_name` and `icon` are each a string of at most 255 characters, or `null`. Whitespace is trimmed; an empty/blank string is stored as `null` (so sending `""` or `null` clears that field). `excluded_from_blocklist` is a boolean (`null` is ignored). Any field may be sent on its own. `ip`, `mac_address`, `query_count`, `first_seen`, `last_seen`, and `id` are read-only — sending any of them (or any other key) is rejected with `422`.
 
 #### `POST /hosts/{id}/sync`
-Sync this host's `device_name` and `icon` from the configured Sando instance (looks the host's IP up in Sando and copies its friendly name and icon). → `200 { "status": "ok", "host": {...} }` with the updated host.
+Sync this host's `device_name`, `icon` and `mac_address` from the configured Sando instance (looks the host's IP up in Sando and copies its friendly name, icon and MAC address). → `200 { "status": "ok", "host": {...} }` with the updated host.
 - `404 not_found` — the host id does not exist, **or** Sando has no record for the host's IP (`detail` carries the IP).
 - `503 not_configured` — no Sando API is configured (`SANDO_API_URL` is unset).
 - `502 upstream_error` — Sando could not be reached or returned an unexpected reply; `detail` explains why.

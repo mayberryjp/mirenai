@@ -260,6 +260,7 @@ class Host(HostsBase):
     ip: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     device_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     icon: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mac_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
     excluded_from_blocklist: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("0")
     )

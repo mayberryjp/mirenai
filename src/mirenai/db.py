@@ -150,6 +150,7 @@ def init_db() -> None:
     HostsBase.metadata.create_all(get_hosts_engine())
 
     _ensure_hosts_icon_column()
+    _ensure_hosts_mac_column()
     _ensure_hosts_excluded_column()
 
     from mirenai.repository.upstreams import ensure_default_upstream
@@ -168,6 +169,19 @@ def _ensure_hosts_icon_column() -> None:
         columns = {row[1] for row in conn.execute(text("PRAGMA table_info(hosts)"))}
         if columns and "icon" not in columns:
             conn.execute(text("ALTER TABLE hosts ADD COLUMN icon VARCHAR(255)"))
+
+
+def _ensure_hosts_mac_column() -> None:
+    """Add ``hosts.mac_address`` to a localhosts database created before the column existed.
+
+    ``create_all`` never alters existing tables and this project has no migration
+    tool, so a pre-existing ``hosts`` table needs a one-off ``ALTER TABLE``.
+    Idempotent and a no-op on fresh databases (where ``create_all`` already added it).
+    """
+    with get_hosts_engine().begin() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(hosts)"))}
+        if columns and "mac_address" not in columns:
+            conn.execute(text("ALTER TABLE hosts ADD COLUMN mac_address VARCHAR(64)"))
 
 
 def _ensure_hosts_excluded_column() -> None:
