@@ -220,3 +220,5 @@ python -m mirenai.workers.blocklist_downloader   # run the blocklist downloader
 - [Sando](https://github.com/mayberryjp/sando) — optional source of client device
   names and icons.
 - `docs/frontend-integration.md` — the API contract the web UI is built against.
+
+# Comment to reforce rebuild
