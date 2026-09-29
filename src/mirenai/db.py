@@ -152,9 +152,12 @@ def init_db() -> None:
     _ensure_hosts_icon_column()
     _ensure_hosts_mac_column()
     _ensure_hosts_excluded_column()
+    _ensure_blocklist_format_column()
 
+    from mirenai.repository.blocklists import ensure_default_blocklist
     from mirenai.repository.upstreams import ensure_default_upstream
 
+    ensure_default_blocklist()
     ensure_default_upstream()
 
 
@@ -197,3 +200,16 @@ def _ensure_hosts_excluded_column() -> None:
             conn.execute(
                 text("ALTER TABLE hosts ADD COLUMN excluded_from_blocklist BOOLEAN NOT NULL DEFAULT 0")
             )
+
+
+def _ensure_blocklist_format_column() -> None:
+    """Add ``blocklists.format`` to a config database created before the column existed.
+
+    ``create_all`` never alters existing tables and this project has no migration
+    tool, so a pre-existing ``blocklists`` table needs a one-off ``ALTER TABLE``.
+    Idempotent and a no-op on fresh databases (where ``create_all`` already added it).
+    """
+    with get_engine().begin() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(blocklists)"))}
+        if columns and "format" not in columns:
+            conn.execute(text("ALTER TABLE blocklists ADD COLUMN format VARCHAR(16)"))

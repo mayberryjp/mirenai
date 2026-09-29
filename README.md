@@ -23,9 +23,10 @@ from one policy table.
   return `NXDOMAIN` for another.
 - **Sinkholes and overrides** — hand back your own A/AAAA records for a name: kill
   ad domains, pin an internal service, do split-horizon DNS.
-- **Global blocklists** — feed it hosts-format or domain-list URLs; it downloads
-  and refreshes them on a schedule and blocks listed names (and their subdomains)
-  for every client. Exempt any device that needs the real answer.
+- **Global blocklists** — feed it hosts-format, domain-list, or Adblock/uBO
+  (`||domain^`) URLs; it downloads and refreshes them on a schedule and blocks
+  listed names (and their subdomains) for every client. Exempt any device that
+  needs the real answer.
 - **IPv4-only mode** — one toggle makes every AAAA query come back empty (NODATA),
   so clients fall back to A instead of hanging.
 - **Caching that stays out of the way** — in-memory, LRU, TTL-aware, thread-safe.
@@ -97,9 +98,9 @@ make docker-build     # docker build -t mirenai:dev .
 make docker-run       # docker compose up
 ```
 
-The container builds the SQLite schema, seeds a single upstream (`8.8.8.8`), and
-starts the API and DNS server. Then point a device — or your whole network, from
-the router — at the host's IP for DNS:
+The container builds the SQLite schema, seeds a single upstream (`8.8.8.8`) and a
+default (disabled) blocklist, and starts the API and DNS server. Then point a
+device — or your whole network, from the router — at the host's IP for DNS:
 
 ```bash
 dig @<host-ip> example.com A          # UDP

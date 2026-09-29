@@ -255,10 +255,11 @@ listed domain and its subdomains, but only for clients whose policy uses the
 | `domain_count`          | int               | number of domains stored (server-maintained)       |
 | `last_downloaded_at`    | string \| null    | datetime of last successful download, else `null`  |
 | `last_status`           | string \| null    | e.g. `"ok: 12345 domains"`, else `null`            |
+| `format`                | string \| null    | detected source syntax: `hosts`, `domain`, `adblock`, or `unknown`; `null` until first download |
 | `created_at`            | string (datetime) |                                                    |
 | `updated_at`            | string (datetime) |                                                    |
 
-Ordering: by `id` ascending. `domain_count`, `last_downloaded_at`, and `last_status` are read-only (maintained by the downloader) — they are ignored if sent in a write body (and unknown extras are rejected).
+Ordering: by `id` ascending. `domain_count`, `last_downloaded_at`, `last_status`, and `format` are read-only (maintained by the downloader) — they are ignored if sent in a write body (and unknown extras are rejected).
 
 #### `GET /blocklists`
 List, paginated. → `{ "status": "ok", "blocklists": [...], "total": N }`
@@ -292,7 +293,7 @@ Lists the domains stored for this blocklist. Supports pagination. The `domains` 
 
 #### `POST /blocklists/{id}/refresh`
 Downloads the source URL immediately, parses it, and replaces the stored domains. Body is ignored. This call is **synchronous** and may take seconds for large lists.
-- `200`: `{ "status": "ok", "blocklist": {...} }` — the returned object reflects the new `domain_count`, `last_downloaded_at`, and `last_status`.
+- `200`: `{ "status": "ok", "blocklist": {...} }` — the returned object reflects the new `domain_count`, `last_downloaded_at`, `last_status`, and `format`.
 - `404 not_found`: unknown id.
 - `502 download_failed`: the fetch failed; `detail` carries the reason (e.g. `"HTTP 404"`, a timeout, or `"blocklist exceeds 67108864 bytes"`).
 

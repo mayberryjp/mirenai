@@ -30,6 +30,7 @@ def _to_dict(blocklist: Blocklist) -> dict[str, Any]:
         if blocklist.last_downloaded_at is not None
         else None,
         "last_status": blocklist.last_status,
+        "format": blocklist.format,
         "created_at": blocklist.created_at.isoformat(),
         "updated_at": blocklist.updated_at.isoformat(),
     }
@@ -130,12 +131,13 @@ def count_domains(blocklist_id: int) -> int:
         return len(session.scalars(stmt).all())
 
 
-def record_success(blocklist_id: int, domain_count: int) -> None:
+def record_success(blocklist_id: int, domain_count: int, source_format: str) -> None:
     with session_scope() as session:
         blocklist = session.get(Blocklist, blocklist_id)
         if blocklist is None:
             return
         blocklist.domain_count = domain_count
+        blocklist.format = source_format
         blocklist.last_status = f"ok: {domain_count} domains"
         blocklist.last_downloaded_at = datetime.now()
 
@@ -163,3 +165,22 @@ def load_blocklist_domains() -> frozenset[str]:
             select(BlocklistDomain.domain).where(BlocklistDomain.blocklist_id.in_(enabled_ids))
         ).all()
     return frozenset(rows)
+
+
+def ensure_default_blocklist() -> None:
+    """Seed a single default blocklist (HaGeZi Multi PRO) when none exist.
+
+    Added disabled so a fresh install ships a curated list ready to enable, without
+    blocking anything until the operator opts in. Idempotent: skipped once any
+    blocklist is configured.
+    """
+    with session_scope() as session:
+        if session.scalars(select(Blocklist.id)).first() is not None:
+            return
+        session.add(
+            Blocklist(
+                name="HaGeZi Multi PRO",
+                url="https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/pro.txt",
+                enabled=False,
+            )
+        )

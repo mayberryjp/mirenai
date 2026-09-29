@@ -1,4 +1,4 @@
-from mirenai.domain.blocklist import is_blocked, parse_blocklist
+from mirenai.domain.blocklist import detect_format, is_blocked, parse_blocklist
 
 _SAMPLE = """\
 # Title: KADhosts
@@ -55,3 +55,56 @@ def test_is_blocked_ignores_unrelated_and_parent_direction() -> None:
 
 def test_is_blocked_empty_set() -> None:
     assert not is_blocked(frozenset(), "anything.example")
+
+
+_ADBLOCK_SAMPLE = """\
+[Adblock Plus]
+! Title: HaGeZi's Multi PRO++
+! Version: 2026.0928.0855.30
+!
+||telemetry.001-studio.com^
+||ad.001zb.com^
+||analytics.004gmbh.de^
+"""
+
+
+def test_detect_format_hosts() -> None:
+    assert detect_format(_SAMPLE) == "hosts"
+
+
+def test_detect_format_domain_only() -> None:
+    assert detect_format("a.com\nb.com\nc.com\n") == "domain"
+
+
+def test_detect_format_adblock() -> None:
+    assert detect_format(_ADBLOCK_SAMPLE) == "adblock"
+
+
+def test_detect_format_unknown_when_no_entries() -> None:
+    assert detect_format("# only comments\n! adblock comment\n\n") == "unknown"
+
+
+def test_parse_adblock_extracts_hosts() -> None:
+    assert parse_blocklist(_ADBLOCK_SAMPLE) == [
+        "telemetry.001-studio.com",
+        "ad.001zb.com",
+        "analytics.004gmbh.de",
+    ]
+
+
+def test_parse_adblock_strips_modifiers_skips_exceptions_and_cosmetics() -> None:
+    text = (
+        "||ads.example.com^$third-party\n"
+        "@@||allow.example.com^\n"
+        "example.com##.banner\n"
+        "sub.example.org#?#.ad\n"
+        "||*.wildcard.com^\n"
+        "||track.example.net^\n"
+    )
+    assert parse_blocklist(text) == ["ads.example.com", "track.example.net"]
+
+
+def test_parse_adblock_dedupes_against_hosts_format() -> None:
+    assert parse_blocklist("0.0.0.0 a.com\n||a.com^\n") == ["a.com"]
+
+

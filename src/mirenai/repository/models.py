@@ -221,6 +221,7 @@ class Blocklist(Base):
         DateTime(timezone=True), nullable=True
     )
     last_status: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    format: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
     )

@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from mirenai.config import settings
-from mirenai.domain.blocklist import parse_blocklist
+from mirenai.domain.blocklist import detect_format, parse_blocklist
 from mirenai.logging import configure_logging, get_logger
 from mirenai.repository import blocklists as repo
 
@@ -76,7 +76,7 @@ def refresh_blocklist(blocklist_id: int) -> dict[str, Any]:
         raise
     domains = parse_blocklist(text)
     repo.replace_domains(blocklist_id, domains)
-    repo.record_success(blocklist_id, len(domains))
+    repo.record_success(blocklist_id, len(domains), detect_format(text))
     return repo.get_blocklist(blocklist_id) or row
 
 
