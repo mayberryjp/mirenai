@@ -3,6 +3,7 @@ from typing import Any
 from bottle import Bottle, request
 
 from mirenai.api.errors import read_pagination
+from mirenai.repository import blocklists as blocklists_repo
 from mirenai.repository import query_log as repo
 
 
@@ -15,8 +16,10 @@ def register_query_routes(app: Bottle) -> None:
         search = (request.query.get("search") or "").strip() or None
         if not paginate:
             rows = repo.list_queries(search=search)
+            blocklists_repo.annotate_blocked(rows)
             return {"status": "ok", "queries": rows, "total": len(rows)}
         rows = repo.list_queries(limit=limit, offset=offset, search=search)
+        blocklists_repo.annotate_blocked(rows)
         return {"status": "ok", "queries": rows, "total": repo.count_queries(search=search)}
 
     @app.delete("/queries")

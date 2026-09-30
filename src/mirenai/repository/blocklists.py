@@ -8,13 +8,14 @@ database so a large list never bloats the config file. The two are joined by
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import Any
 
 from sqlalchemy import delete, insert, select
 
 from mirenai.db import blocklist_session_scope, session_scope
+from mirenai.domain.blocklist import domain_suffixes, is_blocked
 from mirenai.repository.models import Blocklist, BlocklistDomain
 
 
@@ -131,6 +132,59 @@ def count_domains(blocklist_id: int) -> int:
         return len(session.scalars(stmt).all())
 
 
+def _escape_like(value: str) -> str:
+    """Escape LIKE wildcards so user input matches literally."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _blocklist_names(ids: set[int]) -> dict[int, str]:
+    """Map blocklist ids to their names (config database)."""
+    if not ids:
+        return {}
+    with session_scope() as session:
+        rows = session.execute(select(Blocklist.id, Blocklist.name).where(Blocklist.id.in_(ids)))
+        return {row_id: name for row_id, name in rows}
+
+
+def search_domains(
+    search: str, limit: int | None = None, offset: int = 0
+) -> list[dict[str, Any]]:
+    """Find stored domains matching ``search`` (case-insensitive substring).
+
+    Domains live in the blocklist database while blocklist *names* live in the
+    config database, so each match is resolved to the list it belongs to via a
+    separate ``blocklist_id`` -> name lookup.
+    """
+    term = f"%{_escape_like(search)}%"
+    stmt = (
+        select(BlocklistDomain.blocklist_id, BlocklistDomain.domain)
+        .where(BlocklistDomain.domain.ilike(term, escape="\\"))
+        .order_by(BlocklistDomain.domain, BlocklistDomain.blocklist_id)
+    )
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
+    with blocklist_session_scope() as session:
+        rows = session.execute(stmt).all()
+    if not rows:
+        return []
+    names = _blocklist_names({blocklist_id for blocklist_id, _ in rows})
+    return [
+        {
+            "domain": domain,
+            "blocklist_id": blocklist_id,
+            "blocklist_name": names.get(blocklist_id),
+        }
+        for blocklist_id, domain in rows
+    ]
+
+
+def count_domain_matches(search: str) -> int:
+    term = f"%{_escape_like(search)}%"
+    stmt = select(BlocklistDomain.id).where(BlocklistDomain.domain.ilike(term, escape="\\"))
+    with blocklist_session_scope() as session:
+        return len(session.scalars(stmt).all())
+
+
 def record_success(blocklist_id: int, domain_count: int, source_format: str) -> None:
     with session_scope() as session:
         blocklist = session.get(Blocklist, blocklist_id)
@@ -165,6 +219,56 @@ def load_blocklist_domains() -> frozenset[str]:
             select(BlocklistDomain.domain).where(BlocklistDomain.blocklist_id.in_(enabled_ids))
         ).all()
     return frozenset(rows)
+
+
+# SQLite caps host parameters per statement (historically 999); chunk lookups to stay under it.
+_MATCH_CHUNK = 500
+
+
+def find_blocked_domains(candidates: Iterable[str]) -> frozenset[str]:
+    """Return the subset of ``candidates`` listed verbatim on an *enabled* blocklist.
+
+    Exact matches only -- the caller expands a query name into its parent suffixes
+    (see :func:`mirenai.domain.blocklist.domain_suffixes`). Looks up just the
+    candidate rows through the indexed ``domain`` column, so annotating a page of
+    results never loads the whole blocklist into memory.
+    """
+    unique = {candidate for candidate in candidates if candidate}
+    if not unique:
+        return frozenset()
+    with session_scope() as session:
+        enabled_ids = list(
+            session.scalars(select(Blocklist.id).where(Blocklist.enabled.is_(True))).all()
+        )
+    if not enabled_ids:
+        return frozenset()
+    ordered = list(unique)
+    matched: set[str] = set()
+    with blocklist_session_scope() as session:
+        for start in range(0, len(ordered), _MATCH_CHUNK):
+            chunk = ordered[start : start + _MATCH_CHUNK]
+            rows = session.scalars(
+                select(BlocklistDomain.domain)
+                .where(BlocklistDomain.blocklist_id.in_(enabled_ids))
+                .where(BlocklistDomain.domain.in_(chunk))
+            ).all()
+            matched.update(rows)
+    return frozenset(matched)
+
+
+def annotate_blocked(rows: list[dict[str, Any]], key: str = "domain") -> list[dict[str, Any]]:
+    """Add a boolean ``blocked`` field to each row from ``row[key]``.
+
+    Matches the resolver's suffix semantics (a name is blocked when it or any
+    parent domain is on an enabled blocklist). Resolves the whole batch in one
+    lookup, then mutates and returns ``rows``.
+    """
+    matched = find_blocked_domains(
+        suffix for row in rows for suffix in domain_suffixes(row[key])
+    )
+    for row in rows:
+        row["blocked"] = is_blocked(matched, row[key])
+    return rows
 
 
 def ensure_default_blocklist() -> None:

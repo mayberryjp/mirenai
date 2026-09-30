@@ -3,6 +3,7 @@ from typing import Any
 from bottle import Bottle, request
 
 from mirenai.api.errors import read_int_query, read_pagination
+from mirenai.repository import blocklists as blocklists_repo
 from mirenai.repository import client_requests as requests_repo
 from mirenai.repository import client_stats as repo
 from mirenai.repository import runtime_stats as runtime_repo
@@ -62,6 +63,7 @@ def register_stats_routes(app: Bottle) -> None:
         if err is not None:
             return err
         rows = requests_repo.list_recent_new_domains(limit=limit if limit is not None else 100)
+        blocklists_repo.annotate_blocked(rows)
         return {"status": "ok", "domains": rows, "total": len(rows)}
 
     @app.get("/stats/runtime")

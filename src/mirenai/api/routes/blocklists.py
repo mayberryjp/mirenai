@@ -1,6 +1,6 @@
 from typing import Any
 
-from bottle import Bottle, response
+from bottle import Bottle, request, response
 from sqlalchemy.exc import IntegrityError
 
 from mirenai.api.errors import error, parse_body, read_pagination
@@ -20,6 +20,20 @@ def register_blocklist_routes(app: Bottle) -> None:
             return {"status": "ok", "blocklists": rows, "total": len(rows)}
         rows = repo.list_blocklists(limit=limit, offset=offset)
         return {"status": "ok", "blocklists": rows, "total": repo.count_blocklists()}
+
+    @app.get("/blocklists/search")
+    def search_blocklist_domains() -> dict[str, Any]:
+        query = (request.query.get("q") or "").strip()
+        if not query:
+            return error("validation_error", "Invalid request", 422, "q is required")
+        paginate, limit, offset, err = read_pagination()
+        if err is not None:
+            return err
+        if not paginate:
+            matches = repo.search_domains(query)
+            return {"status": "ok", "matches": matches, "total": len(matches)}
+        matches = repo.search_domains(query, limit=limit, offset=offset)
+        return {"status": "ok", "matches": matches, "total": repo.count_domain_matches(query)}
 
     @app.get("/blocklists/<blocklist_id:int>")
     def get_blocklist(blocklist_id: int) -> dict[str, Any]:

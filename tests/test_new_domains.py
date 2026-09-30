@@ -7,6 +7,7 @@ from webtest import TestApp
 from mirenai import config, db
 from mirenai.api.app import create_app
 from mirenai.db import Base, session_scope
+from mirenai.repository import blocklists as blocklists_repo
 from mirenai.repository import client_requests as repo
 from mirenai.repository.models import ClientRequest, QueryLog
 
@@ -171,6 +172,8 @@ def test_recent_new_domains_route_envelope_and_limit(monkeypatch: pytest.MonkeyP
         return [{"client": "10.0.0.5", "domain": "a.com", "first_seen": "2026-09-27T09:00:00"}]
 
     monkeypatch.setattr(repo, "list_recent_new_domains", _fake)
+    # Isolate the envelope from the blocklist DB (annotation is covered in test_blocklist_match).
+    monkeypatch.setattr(blocklists_repo, "annotate_blocked", lambda rows, key="domain": rows)
     app = TestApp(create_app())
 
     resp = app.get("/stats/new-domains/recent")

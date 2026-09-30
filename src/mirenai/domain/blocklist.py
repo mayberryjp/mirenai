@@ -141,13 +141,20 @@ def detect_format(text: str) -> str:
     return max(votes, key=lambda fmt: (votes[fmt], _FORMAT_PRIORITY[fmt]))
 
 
-def is_blocked(blocked: frozenset[str], qname: str) -> bool:
-    """Return ``True`` if ``qname`` or any of its parent domains is blocked."""
+def domain_suffixes(qname: str) -> list[str]:
+    """Return ``qname`` and each of its parent domains, most specific first.
+
+    ``a.ads.example.com`` -> ``["a.ads.example.com", "ads.example.com", "example.com", "com"]``.
+    Empty when ``qname`` is not a usable name. These are the exact strings a
+    blocklist entry must match for the name to be blocked.
+    """
     name = normalize_domain(qname)
     if not name:
-        return False
+        return []
     labels = name.split(".")
-    for i in range(len(labels)):
-        if ".".join(labels[i:]) in blocked:
-            return True
-    return False
+    return [".".join(labels[i:]) for i in range(len(labels))]
+
+
+def is_blocked(blocked: frozenset[str], qname: str) -> bool:
+    """Return ``True`` if ``qname`` or any of its parent domains is blocked."""
+    return any(suffix in blocked for suffix in domain_suffixes(qname))

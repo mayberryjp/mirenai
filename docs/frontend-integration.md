@@ -44,7 +44,7 @@ The resource key is the singular resource name: `policy`, `upstream`, `blocklist
 ```json
 { "status": "ok", "policies": [ /* array */ ], "total": 42 }
 ```
-The collection key is the plural resource name: `policies`, `upstreams`, `blocklists`, `queries`, `domains`, `hosts`, `stats`, `requests`. `total` is described in [§5 Pagination](#5-pagination).
+The collection key is the plural resource name: `policies`, `upstreams`, `blocklists`, `queries`, `domains`, `matches`, `hosts`, `stats`, `requests`. `total` is described in [§5 Pagination](#5-pagination).
 
 **Delete (success):**
 ```json
@@ -82,7 +82,7 @@ All errors use the envelope above. Map on `code` (stable string), not on the hum
 
 ## 5. Pagination
 
-List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/domains`, `/queries`, `/hosts`, `/stats`, `/stats/site`, `/stats/upstreams`, `/requests`) accept **optional** `limit` and `offset` query parameters.
+List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/domains`, `/blocklists/search`, `/queries`, `/hosts`, `/stats`, `/stats/site`, `/stats/upstreams`, `/requests`) accept **optional** `limit` and `offset` query parameters.
 
 - **Neither supplied →** all rows are returned; `total` equals the number of rows in the response.
 - **Either supplied →** results are paginated; `total` is the **full count** across all rows (not the length of this page).
@@ -291,6 +291,17 @@ Lists the domains stored for this blocklist. Supports pagination. The `domains` 
 
 > Domain lists can be very large (tens/hundreds of thousands). **Always paginate** this endpoint in the UI.
 
+#### `GET /blocklists/search`
+Look up which blocklist(s) a domain is on. Case-insensitive **substring** match against every stored blocklist domain (across all blocklists, enabled or not). Supports pagination.
+
+Query params: `q` (**required** — the search string) plus optional `limit`/`offset`.
+```json
+{ "status": "ok", "matches": [ { "domain": "ads.example.com", "blocklist_id": 3, "blocklist_name": "HaGeZi Multi PRO" } ], "total": 1 }
+```
+Each match carries the blocked `domain`, the `blocklist_id` it belongs to, and that list's `blocklist_name` (`null` if the config row is gone). Ordering: alphabetical by domain. `total` is the full (filtered) match count. Errors: `422 validation_error` if `q` is missing or blank.
+
+> A substring lookup scans the whole domain table (a leading-wildcard `LIKE` can't use the index), so it can be slow on multi-million-entry lists. Paginate and debounce in the UI.
+
 #### `POST /blocklists/{id}/refresh`
 Downloads the source URL immediately, parses it, and replaces the stored domains. Body is ignored. This call is **synchronous** and may take seconds for large lists.
 - `200`: `{ "status": "ok", "blocklist": {...} }` — the returned object reflects the new `domain_count`, `last_downloaded_at`, `last_status`, and `format`.
@@ -309,6 +320,7 @@ Per-client DNS query statistics, aggregated by `(client, domain, qtype)`.
 | `id`          | int               |                                               |
 | `client`      | string            | source IP                                     |
 | `domain`      | string            | queried name                                  |
+| `blocked`     | bool              | `true` if `domain` or a parent domain is on an enabled blocklist |
 | `qtype`       | string            | DNS record type, e.g. `A`, `AAAA`, `MX`       |
 | `count`       | int               | number of times seen                          |
 | `last_action` | string \| null    | last action applied (`forward`/`override`/`deny`/`blocklist`) or `null` |
@@ -319,6 +331,8 @@ Ordering: by `last_seen` descending, then `id`.
 
 #### `GET /queries`
 List, paginated. → `{ "status": "ok", "queries": [...], "total": N }`
+
+Each row carries a `blocked` boolean: `true` when its `domain` (or any parent domain) is on an **enabled** blocklist, using the same suffix match the resolver applies. It reflects blocklist membership, not whether the query was actually blocked (see `last_action` for that).
 
 Optional `search=<text>` query param filters server-side to rows where **`client` OR `domain`** contains `<text>` (case-insensitive substring; `%`/`_` are matched literally). `total` reflects the filtered count, so pagination stays correct. Combine with `limit`/`offset` as usual.
 
@@ -511,6 +525,7 @@ collapse to a single row). Read-only.
 | ------------- | ----------------- | ------------------------------------------------------- |
 | `client`      | string            | source IP                                               |
 | `domain`      | string            | the queried name                                        |
+| `blocked`     | bool              | `true` if `domain` or a parent domain is on an enabled blocklist |
 | `first_seen`  | string (datetime) | earliest time this client first saw this domain         |
 | `last_action` | string \| null    | action last recorded for this `(client, domain)` in the query log (`forward`/`override`/`deny`/`blocklist`), or `null` |
 
