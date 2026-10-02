@@ -16,6 +16,11 @@ from mirenai.logging import get_logger
 
 log = get_logger("dns.clientstats")
 
+# Synthetic client key under which dropped foreign-network queries are counted.
+# Using one reserved bucket keeps cardinality bounded (a flood of spoofed source
+# IPs can't create a row per address).
+FOREIGN_CLIENT = "foreign"
+
 # resolver ``result`` string -> stat column name
 _RESULT_COLUMNS = {
     "forward": "forwarded",
@@ -24,6 +29,7 @@ _RESULT_COLUMNS = {
     "deny": "denied",
     "blocklist": "blocked",
     "servfail": "servfail",
+    "foreign": "foreign",
 }
 
 
@@ -38,6 +44,7 @@ class ClientStatAgg:
     denied: int
     blocked: int
     servfail: int
+    foreign: int
 
 
 ClientStatsFlush = Callable[[list[ClientStatAgg]], None]
@@ -64,6 +71,10 @@ class ClientStatsBuffer:
             if column is not None:
                 counter[column] = counter.get(column, 0) + 1
 
+    def add_foreign(self) -> None:
+        """Count one query dropped because its source network is untrusted."""
+        self.add(FOREIGN_CLIENT, "foreign")
+
     def flush(self) -> None:
         with self._lock:
             if not self._data:
@@ -81,6 +92,7 @@ class ClientStatsBuffer:
                 denied=counter.get("denied", 0),
                 blocked=counter.get("blocked", 0),
                 servfail=counter.get("servfail", 0),
+                foreign=counter.get("foreign", 0),
             )
             for (hour, client), counter in snapshot.items()
         ]

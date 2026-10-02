@@ -12,6 +12,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from mirenai.domain.network import NetworkFilter
 from mirenai.domain.policy import PolicyRule
 from mirenai.logging import get_logger
 
@@ -45,6 +46,7 @@ PolicyLoader = Callable[[], list[PolicyRule]]
 UpstreamLoader = Callable[[], list[UpstreamServer]]
 BlocklistLoader = Callable[[], frozenset[str]]
 BlocklistExcludedLoader = Callable[[], frozenset[str]]
+TrustedNetworkLoader = Callable[[], list[str]]
 
 
 class RuntimeState:
@@ -55,18 +57,21 @@ class RuntimeState:
         load_upstreams: UpstreamLoader,
         load_blocklist: BlocklistLoader,
         load_blocklist_excluded: BlocklistExcludedLoader,
+        load_trusted_networks: TrustedNetworkLoader,
     ) -> None:
         self._load_settings = load_settings
         self._load_policies = load_policies
         self._load_upstreams = load_upstreams
         self._load_blocklist = load_blocklist
         self._load_blocklist_excluded = load_blocklist_excluded
+        self._load_trusted_networks = load_trusted_networks
         self._lock = threading.RLock()
         self._settings = RuntimeSettings()
         self._policies: list[PolicyRule] = []
         self._upstreams: list[UpstreamServer] = []
         self._blocklist: frozenset[str] = frozenset()
         self._blocklist_excluded: frozenset[str] = frozenset()
+        self._network_filter = NetworkFilter()
         self._stop = threading.Event()
         self.reload()
 
@@ -76,12 +81,14 @@ class RuntimeState:
         new_upstreams = self._load_upstreams()
         new_blocklist = self._load_blocklist()
         new_blocklist_excluded = self._load_blocklist_excluded()
+        new_network_filter = NetworkFilter.from_cidrs(self._load_trusted_networks())
         with self._lock:
             self._settings = new_settings
             self._policies = new_policies
             self._upstreams = new_upstreams
             self._blocklist = new_blocklist
             self._blocklist_excluded = new_blocklist_excluded
+            self._network_filter = new_network_filter
 
     @property
     def settings(self) -> RuntimeSettings:
@@ -107,6 +114,11 @@ class RuntimeState:
     def blocklist_excluded(self) -> frozenset[str]:
         with self._lock:
             return self._blocklist_excluded
+
+    @property
+    def network_filter(self) -> NetworkFilter:
+        with self._lock:
+            return self._network_filter
 
     def start_refresh(self) -> None:
         thread = threading.Thread(target=self._refresh_loop, name="config-refresh", daemon=True)

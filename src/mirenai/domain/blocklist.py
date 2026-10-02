@@ -19,6 +19,7 @@ one, so listing ``example.com`` also covers ``ads.example.com``.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from ipaddress import ip_address
 
 from mirenai.domain.policy import normalize_domain
@@ -52,6 +53,29 @@ def parse_blocklist(text: str) -> list[str]:
         seen.add(domain)
         domains.append(domain)
     return domains
+
+
+def normalize_override_domain(name: str) -> str | None:
+    """Return the normalized form of an override domain, or ``None`` if invalid.
+
+    Applies the same normalization :func:`parse_blocklist` uses so an override is
+    compared against stored blocklist entries in identical form.
+    """
+    normalized = normalize_domain(name)
+    return normalized if _is_valid_domain(normalized) else None
+
+
+def apply_overrides(domains: Iterable[str], overrides: Iterable[str]) -> list[str]:
+    """Drop every override domain from parsed blocklist ``domains``.
+
+    Overrides are matched exactly against the normalized entries produced by
+    :func:`parse_blocklist`, so an override removes a verbatim list entry before
+    it is stored. Order is preserved.
+    """
+    exempt = frozenset(overrides)
+    if not exempt:
+        return list(domains)
+    return [domain for domain in domains if domain not in exempt]
 
 
 def _extract_domain(raw_line: str) -> str | None:

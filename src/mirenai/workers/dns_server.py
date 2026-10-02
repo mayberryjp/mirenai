@@ -13,7 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 from dnslib import RCODE
-from dnslib.server import BaseResolver, DNSServer
+from dnslib.server import BaseResolver, DNSHandler, DNSServer
 
 from mirenai.config import settings
 from mirenai.domain.cache import TTLCache
@@ -21,6 +21,7 @@ from mirenai.domain.clientrequests import ClientRequestBuffer
 from mirenai.domain.clientstats import ClientStatsBuffer
 from mirenai.domain.hosts import HostTracker
 from mirenai.domain.querybuffer import QueryBuffer
+from mirenai.domain.queryevents import QueryEventBuffer
 from mirenai.domain.resolver import DnsResolver
 from mirenai.domain.state import RuntimeState
 from mirenai.domain.upstreamstats import UpstreamRttBuffer
@@ -32,9 +33,11 @@ from mirenai.repository.client_requests import materialize_new_domains, record_c
 from mirenai.repository.client_stats import record_client_stats
 from mirenai.repository.hosts import load_blocklist_excluded, load_known_hosts, record_hosts
 from mirenai.repository.policies import ensure_client_policy, load_rules
+from mirenai.repository.query_events import record_query_events
 from mirenai.repository.query_log import record_queries
 from mirenai.repository.runtime_stats import record_runtime_stats
 from mirenai.repository.settings import load_runtime_settings
+from mirenai.repository.trusted_networks import load_trusted_networks
 from mirenai.repository.upstream_stats import record_upstream_rtt
 from mirenai.repository.upstreams import load_upstreams
 
@@ -104,6 +107,12 @@ class ScreeningResolver(BaseResolver):  # type: ignore[misc]  # dnslib is untype
         self._core = core
         self._hosts = hosts
 
+    def is_trusted(self, client_ip: str) -> bool:
+        return self._core.is_trusted(client_ip)
+
+    def record_foreign(self, client_ip: str) -> None:
+        self._core.record_foreign(client_ip)
+
     def resolve(self, request: Any, handler: Any) -> Any:
         client_ip = handler.client_address[0]
         self._hosts.record(client_ip)
@@ -116,6 +125,23 @@ class ScreeningResolver(BaseResolver):  # type: ignore[misc]  # dnslib is untype
             return reply
 
 
+class ScreeningDNSHandler(DNSHandler):  # type: ignore[misc]  # dnslib is untyped
+    """Drop queries from untrusted source networks before any parse or reply.
+
+    The trust check runs at the very start of request handling (UDP and TCP), so a
+    foreign client's packet is counted and discarded without being decoded,
+    answered, or recorded as a known host.
+    """
+
+    def handle(self) -> None:
+        resolver = self.server.resolver
+        client_ip = self.client_address[0]
+        if not resolver.is_trusted(client_ip):
+            resolver.record_foreign(client_ip)
+            return
+        super().handle()
+
+
 def _build_state() -> RuntimeState:
     """Load initial state, retrying until the database schema is ready."""
     while True:
@@ -126,6 +152,7 @@ def _build_state() -> RuntimeState:
                 load_upstreams=load_upstreams,
                 load_blocklist=load_blocklist_domains,
                 load_blocklist_excluded=load_blocklist_excluded,
+                load_trusted_networks=load_trusted_networks,
             )
         except Exception:
             log.warning("database not ready; retrying in %ds", _DB_RETRY_SECONDS)
@@ -166,6 +193,9 @@ def main() -> None:
         flush=record_client_requests, flush_seconds=_REQUESTS_FLUSH_SECONDS
     )
     rtt = UpstreamRttBuffer(flush=record_upstream_rtt, flush_seconds=runtime.query_flush_seconds)
+    events = QueryEventBuffer(
+        flush=record_query_events, flush_seconds=runtime.query_flush_seconds
+    )
     hosts = HostTracker(
         flush=record_hosts,
         load=load_known_hosts,
@@ -173,14 +203,22 @@ def main() -> None:
         refresh_seconds=runtime.refresh_seconds,
         on_discover=_make_on_discover(state),
     )
-    core = DnsResolver(state, cache, buffer, stats, requests, rtt)
+    core = DnsResolver(state, cache, buffer, stats, requests, rtt, events)
     resolver = ScreeningResolver(core, hosts)
 
     udp_server = DNSServer(
-        resolver, port=settings.dns_port, address=settings.dns_listen_address, tcp=False
+        resolver,
+        port=settings.dns_port,
+        address=settings.dns_listen_address,
+        tcp=False,
+        handler=ScreeningDNSHandler,
     )
     tcp_server = DNSServer(
-        resolver, port=settings.dns_port, address=settings.dns_listen_address, tcp=True
+        resolver,
+        port=settings.dns_port,
+        address=settings.dns_listen_address,
+        tcp=True,
+        handler=ScreeningDNSHandler,
     )
 
     state.start_refresh()
@@ -188,6 +226,7 @@ def main() -> None:
     stats.start()
     requests.start()
     rtt.start()
+    events.start()
     hosts.start()
     materialize_stop = threading.Event()
     threading.Thread(
@@ -232,6 +271,7 @@ def main() -> None:
         stats.stop()
         requests.stop()
         rtt.stop()
+        events.stop()
         hosts.stop()
         materialize_stop.set()
         runtime_stats_stop.set()

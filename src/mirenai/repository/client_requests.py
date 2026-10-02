@@ -7,6 +7,7 @@ incremented and ``last_seen`` refreshed (``first_seen`` is set once on insert).
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -146,7 +147,9 @@ def list_new_domain_counts(client: str | None = None) -> list[dict[str, Any]]:
         ]
 
 
-def list_recent_new_domains(limit: int = 100) -> list[dict[str, Any]]:
+def list_recent_new_domains(
+    limit: int = 100, exclude_clients: Collection[str] | None = None
+) -> list[dict[str, Any]]:
     """List the most recently first-seen ``(client, domain)`` pairs, newest first.
 
     One row per ``(client, domain)`` dated by the earliest ``first_seen`` across
@@ -154,6 +157,8 @@ def list_recent_new_domains(limit: int = 100) -> list[dict[str, Any]]:
     (the top-N most recently discovered domains). ``last_action`` is the action
     the query log last recorded for that ``(client, domain)`` (newest
     ``last_seen`` across query types), or ``None`` when the query log has no row.
+    Clients in ``exclude_clients`` are filtered out before the limit is applied
+    (used to drop clients opted out of new-domain monitoring).
     """
     first_seen = func.min(ClientRequest.first_seen)
     last_action = (
@@ -166,14 +171,16 @@ def list_recent_new_domains(limit: int = 100) -> list[dict[str, Any]]:
         .limit(1)
         .scalar_subquery()
     )
+    stmt = select(
+        ClientRequest.client,
+        ClientRequest.domain,
+        first_seen.label("first_seen"),
+        last_action.label("last_action"),
+    )
+    if exclude_clients:
+        stmt = stmt.where(ClientRequest.client.not_in(exclude_clients))
     stmt = (
-        select(
-            ClientRequest.client,
-            ClientRequest.domain,
-            first_seen.label("first_seen"),
-            last_action.label("last_action"),
-        )
-        .group_by(ClientRequest.client, ClientRequest.domain)
+        stmt.group_by(ClientRequest.client, ClientRequest.domain)
         .order_by(first_seen.desc())
         .limit(limit)
     )

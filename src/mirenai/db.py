@@ -152,7 +152,9 @@ def init_db() -> None:
     _ensure_hosts_icon_column()
     _ensure_hosts_mac_column()
     _ensure_hosts_excluded_column()
+    _ensure_hosts_flag_new_domains_column()
     _ensure_blocklist_format_column()
+    _ensure_client_hourly_stats_foreign_column()
 
     from mirenai.repository.blocklists import ensure_default_blocklist
     from mirenai.repository.upstreams import ensure_default_upstream
@@ -202,6 +204,22 @@ def _ensure_hosts_excluded_column() -> None:
             )
 
 
+def _ensure_hosts_flag_new_domains_column() -> None:
+    """Add ``hosts.flag_new_domains`` to a localhosts database created before it.
+
+    ``create_all`` never alters existing tables and this project has no migration
+    tool, so a pre-existing ``hosts`` table needs a one-off ``ALTER TABLE``.
+    Defaults to ``1`` so existing clients keep surfacing new domains. Idempotent
+    and a no-op on fresh databases (where ``create_all`` already added it).
+    """
+    with get_hosts_engine().begin() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(hosts)"))}
+        if columns and "flag_new_domains" not in columns:
+            conn.execute(
+                text("ALTER TABLE hosts ADD COLUMN flag_new_domains BOOLEAN NOT NULL DEFAULT 1")
+            )
+
+
 def _ensure_blocklist_format_column() -> None:
     """Add ``blocklists.format`` to a config database created before the column existed.
 
@@ -213,3 +231,19 @@ def _ensure_blocklist_format_column() -> None:
         columns = {row[1] for row in conn.execute(text("PRAGMA table_info(blocklists)"))}
         if columns and "format" not in columns:
             conn.execute(text("ALTER TABLE blocklists ADD COLUMN format VARCHAR(16)"))
+
+
+def _ensure_client_hourly_stats_foreign_column() -> None:
+    """Add ``client_hourly_stats.foreign`` to a config database created before it.
+
+    ``create_all`` never alters existing tables and this project has no migration
+    tool, so a pre-existing ``client_hourly_stats`` table needs a one-off
+    ``ALTER TABLE``. ``foreign`` is a SQL keyword, so it must stay quoted.
+    Idempotent and a no-op on fresh databases (where ``create_all`` already added it).
+    """
+    with get_engine().begin() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(client_hourly_stats)"))}
+        if columns and "foreign" not in columns:
+            conn.execute(
+                text('ALTER TABLE client_hourly_stats ADD COLUMN "foreign" BIGINT NOT NULL DEFAULT 0')
+            )

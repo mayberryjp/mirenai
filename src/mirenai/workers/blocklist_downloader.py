@@ -18,8 +18,9 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from mirenai.config import settings
-from mirenai.domain.blocklist import detect_format, parse_blocklist
+from mirenai.domain.blocklist import apply_overrides, detect_format, parse_blocklist
 from mirenai.logging import configure_logging, get_logger
+from mirenai.repository import blocklist_overrides as override_repo
 from mirenai.repository import blocklists as repo
 
 log = get_logger("blocklist.downloader")
@@ -74,7 +75,7 @@ def refresh_blocklist(blocklist_id: int) -> dict[str, Any]:
     except BlocklistDownloadError as exc:
         repo.record_failure(blocklist_id, str(exc))
         raise
-    domains = parse_blocklist(text)
+    domains = apply_overrides(parse_blocklist(text), override_repo.load_override_domains())
     repo.replace_domains(blocklist_id, domains)
     repo.record_success(blocklist_id, len(domains), detect_format(text))
     return repo.get_blocklist(blocklist_id) or row

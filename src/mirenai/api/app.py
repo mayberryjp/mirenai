@@ -10,10 +10,12 @@ from mirenai.api.routes.client_modes import register_client_mode_routes
 from mirenai.api.routes.health import register_health_routes
 from mirenai.api.routes.hosts import register_host_routes
 from mirenai.api.routes.policies import register_policy_routes
+from mirenai.api.routes.query_events import register_query_event_routes
 from mirenai.api.routes.query_log import register_query_routes
 from mirenai.api.routes.requests import register_request_routes
 from mirenai.api.routes.settings import register_settings_routes
 from mirenai.api.routes.stats import register_stats_routes
+from mirenai.api.routes.trusted_networks import register_trusted_network_routes
 from mirenai.api.routes.upstreams import register_upstream_routes
 from mirenai.logging import get_logger
 
@@ -32,12 +34,14 @@ def create_app() -> Bottle:
     register_client_mode_routes(app)
     register_upstream_routes(app)
     register_query_routes(app)
+    register_query_event_routes(app)
     register_settings_routes(app)
     register_blocklist_routes(app)
     register_host_routes(app)
     register_stats_routes(app)
     register_request_routes(app)
     register_cache_routes(app)
+    register_trusted_network_routes(app)
 
     @app.hook("before_request")
     def start_timer() -> None:

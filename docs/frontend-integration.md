@@ -70,7 +70,7 @@ All errors use the envelope above. Map on `code` (stable string), not on the hum
 | ----------- | ------------------ | ------------------------------------------------------------------------------- |
 | `400`       | `bad_request`      | Body is not valid JSON, or is not a JSON object.                                |
 | `404`       | `not_found`        | Resource id does not exist, or unknown route.                                   |
-| `409`       | `conflict`         | Uniqueness violation (duplicate policy `client`+`domain`, or blocklist `name`). |
+| `409`       | `conflict`         | Uniqueness violation (duplicate policy `client`+`domain`, blocklist `name`, override `domain`, or trusted-network `cidr`). |
 | `422`       | `validation_error` | Body failed validation (bad field, wrong type, missing required, unknown field, non-integer pagination). |
 | `502`       | `download_failed`  | `POST /blocklists/{id}/refresh` could not fetch the source URL. `detail` explains why. |
 | `503`       | `not_ready`        | `GET /ready` only — database not reachable.                                     |
@@ -82,7 +82,7 @@ All errors use the envelope above. Map on `code` (stable string), not on the hum
 
 ## 5. Pagination
 
-List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/domains`, `/blocklists/search`, `/queries`, `/hosts`, `/stats`, `/stats/site`, `/stats/upstreams`, `/requests`) accept **optional** `limit` and `offset` query parameters.
+List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/domains`, `/blocklists/search`, `/queries`, `/hosts`, `/stats`, `/stats/site`, `/stats/upstreams`, `/requests`, `/trusted-networks`) accept **optional** `limit` and `offset` query parameters.
 
 - **Neither supplied →** all rows are returned; `total` equals the number of rows in the response.
 - **Either supplied →** results are paginated; `total` is the **full count** across all rows (not the length of this page).
@@ -308,6 +308,35 @@ Downloads the source URL immediately, parses it, and replaces the stored domains
 - `404 not_found`: unknown id.
 - `502 download_failed`: the fetch failed; `detail` carries the reason (e.g. `"HTTP 404"`, a timeout, or `"blocklist exceeds 67108864 bytes"`).
 
+#### Blocklist overrides (allowlist)
+
+An **override** exempts a single domain from *every* blocklist. Override domains are
+removed from each list's parsed domains **when the list is downloaded**, before the
+domains are stored — so this is a download-time filter, not a per-query rule. Adding or
+removing an override therefore takes effect on a list's **next** refresh; call
+`POST /blocklists/{id}/refresh` to apply it to a list immediately.
+
+**Override object:**
+| field        | type              | notes                                                     |
+| ------------ | ----------------- | --------------------------------------------------------- |
+| `id`         | int               |                                                           |
+| `domain`     | string            | normalized (lower-cased, trailing dot stripped); unique   |
+| `created_at` | string (datetime) |                                                           |
+| `updated_at` | string (datetime) |                                                           |
+
+#### `GET /blocklists/overrides`
+List, paginated. → `{ "status": "ok", "overrides": [...], "total": N }`. Ordering: alphabetical by `domain`.
+
+#### `POST /blocklists/overrides`
+Create. → `201 { "status": "ok", "override": {...} }`
+```json
+{ "domain": "aria.microsoft.com" }
+```
+Required: `domain`. Validation: must be a valid domain name (normalized on save). Errors: `422` (invalid/empty domain, or unknown field), `409 conflict` (domain is already an override).
+
+#### `DELETE /blocklists/overrides/{id}`
+Removes an override. → `200 { "status": "ok", "deleted": <id> }` or `404`. The exempted domain reappears on the next download of any list that carries it.
+
 ---
 
 ### 7.5 Query log
@@ -335,6 +364,40 @@ List, paginated. → `{ "status": "ok", "queries": [...], "total": N }`
 Each row carries a `blocked` boolean: `true` when its `domain` (or any parent domain) is on an **enabled** blocklist, using the same suffix match the resolver applies. It reflects blocklist membership, not whether the query was actually blocked (see `last_action` for that).
 
 Optional `search=<text>` query param filters server-side to rows where **`client` OR `domain`** contains `<text>` (case-insensitive substring; `%`/`_` are matched literally). `total` reflects the filtered count, so pagination stays correct. Combine with `limit`/`offset` as usual.
+
+#### `GET /queries/top-blocked`
+The most-queried domains that are on an **enabled** blocklist, ranked by total query count — a "top offenders" view for a dashboard. → `{ "status": "ok", "domains": [...], "total": N }`
+
+Optional `limit=<n>` caps how many domains are returned (the Top X; default `20`). Non-blocked domains are excluded even if queried more often. Membership uses the same suffix match the resolver applies, so a queried subdomain can be sourced from a listed parent domain.
+
+**Top-blocked object:**
+| field         | type              | notes                                                              |
+| ------------- | ----------------- | ------------------------------------------------------------------ |
+| `domain`      | string            | the queried name that is blocked                                   |
+| `count`       | int               | total queries across all clients and query types (the rank key)    |
+| `clients`     | array             | the clients that queried it, each `{ "client": <ip>, "count": <n> }`, most-active first |
+| `first_seen`  | string (datetime) | earliest time any client queried the domain                        |
+| `last_seen`   | string (datetime) | latest time any client queried the domain                          |
+| `blocklists`  | array             | the enabled blocklist(s) the domain is sourced from, each `{ "blocklist_id": <id>, "blocklist_name": <name\|null>, "matched_domain": <listed suffix> }` |
+
+```json
+{
+  "status": "ok",
+  "domains": [
+    {
+      "domain": "ads.example.com",
+      "count": 1523,
+      "clients": [ { "client": "10.0.0.5", "count": 1400 }, { "client": "10.0.0.9", "count": 123 } ],
+      "first_seen": "2026-01-01T08:00:00",
+      "last_seen": "2026-01-02T09:00:00",
+      "blocklists": [ { "blocklist_id": 3, "blocklist_name": "HaGeZi Multi PRO", "matched_domain": "ads.example.com" } ]
+    }
+  ],
+  "total": 1
+}
+```
+
+`total` is the number of domains returned (after the Top X cap), not a pagination total. Errors: `422 validation_error` if `limit` is not an integer.
 
 #### `DELETE /queries`
 Resets (deletes) **all** query statistics. → `{ "status": "ok", "deleted": <count> }` where `deleted` is the number of rows removed.
@@ -381,8 +444,9 @@ Validation: `default_action` must be `deny` or `forward`. Unknown keys are rejec
 Client devices seen by the DNS server, stored in a separate `localhosts.db`
 database. The DNS server auto-records one row per source IP on every query
 (incrementing `query_count` and refreshing `last_seen`); there is **no create
-endpoint**. The editable fields are `device_name`, `icon`, and
-`excluded_from_blocklist`; everything else is server-maintained. When a client is
+endpoint**. The editable fields are `device_name`, `icon`,
+`excluded_from_blocklist`, and `flag_new_domains`; everything else is
+server-maintained. When a client is
 first seen it is also seeded with an explicit wildcard policy (see
 [§7.10](#710-client-mode-simplified)) and, if a Sando API is configured, its
 `device_name`/`icon`/`mac_address` are synced from Sando automatically.
@@ -391,6 +455,10 @@ first seen it is also seeded with an explicit wildcard policy (see
 through the enabled blocklists by default. Set `excluded_from_blocklist` to
 `true` on a host to exempt that client entirely — none of its lookups are then
 subject to the blocklist.
+
+**New-domain monitoring is per-client:** every client's newly-seen domains appear
+in the recent-new-domains feed by default. Set `flag_new_domains` to `false` on a
+host to hide that client's new domains from `GET /stats/new-domains/recent`.
 
 **Host object:**
 | field         | type              | notes                                              |
@@ -401,6 +469,7 @@ subject to the blocklist.
 | `icon`        | string \| null    | icon key (e.g. from Sando); `null` until set        |
 | `mac_address` | string \| null    | MAC address synced from Sando; `null` until set     |
 | `excluded_from_blocklist` | bool  | when `true`, this client's queries bypass the blocklist (default `false`) |
+| `flag_new_domains` | bool  | when `false`, this client's newly-seen domains are hidden from `GET /stats/new-domains/recent` (default `true`) |
 | `query_count` | int               | total queries seen from this IP; server-maintained |
 | `first_seen`  | string (datetime) | server-recorded                                    |
 | `last_seen`   | string (datetime) | server-maintained                                  |
@@ -414,11 +483,11 @@ List, paginated. → `{ "status": "ok", "hosts": [...], "total": N }`
 → `200 { "status": "ok", "host": {...} }` or `404 not_found`.
 
 #### `PUT /hosts/{id}`
-Set or clear the device name and/or icon, or toggle blocklist exclusion. → `200 { "status": "ok", "host": {...} }` or `404 not_found`.
+Set or clear the device name and/or icon, toggle blocklist exclusion, or toggle new-domain monitoring. → `200 { "status": "ok", "host": {...} }` or `404 not_found`.
 ```json
 { "device_name": "living-room-tv", "icon": "television_icon", "excluded_from_blocklist": true }
 ```
-Validation: `device_name` and `icon` are each a string of at most 255 characters, or `null`. Whitespace is trimmed; an empty/blank string is stored as `null` (so sending `""` or `null` clears that field). `excluded_from_blocklist` is a boolean (`null` is ignored). Any field may be sent on its own. `ip`, `mac_address`, `query_count`, `first_seen`, `last_seen`, and `id` are read-only — sending any of them (or any other key) is rejected with `422`.
+Validation: `device_name` and `icon` are each a string of at most 255 characters, or `null`. Whitespace is trimmed; an empty/blank string is stored as `null` (so sending `""` or `null` clears that field). `excluded_from_blocklist` and `flag_new_domains` are booleans (`null` is ignored). Any field may be sent on its own. `ip`, `mac_address`, `query_count`, `first_seen`, `last_seen`, and `id` are read-only — sending any of them (or any other key) is rejected with `422`.
 
 #### `POST /hosts/{id}/sync`
 Sync this host's `device_name`, `icon` and `mac_address` from the configured Sando instance (looks the host's IP up in Sando and copies its friendly name, icon and MAC address). → `200 { "status": "ok", "host": {...} }` with the updated host.
@@ -451,8 +520,11 @@ is **read-only** — there are no create/update/delete endpoints.
 | `denied`     | int               | refused by policy — `NXDOMAIN` (`deny`)                     |
 | `blocked`    | int               | refused by blocklist — `NXDOMAIN` (`blocklist`)             |
 | `servfail`   | int               | upstream failure (`servfail`)                               |
+| `foreign`    | int               | queries dropped from untrusted source networks (`foreign`)  |
 
 "Approved" = `forwarded + cached + overridden`; "denied" = `denied + blocked`. `total` may exceed the sum of the columns if a future result type isn't itemized, so treat the columns as a breakdown of (not necessarily equal to) `total`.
+
+`foreign` counts queries dropped because the source IP was outside the configured trusted subnets (see §7.13). These are tallied under a synthetic `client` of `"foreign"`, so for a real client `foreign` is always `0` — read the meaningful value from `GET /stats/site`, or query `GET /stats?client=foreign`.
 
 Ordering: by `hour_start` descending, then `client`.
 
@@ -485,6 +557,7 @@ Site-wide hourly totals — the same counts **summed across all clients**, one r
 | `denied`     | int               | Σ `deny`                                           |
 | `blocked`    | int               | Σ `blocklist`                                      |
 | `servfail`   | int               | Σ `servfail`                                       |
+| `foreign`    | int               | Σ dropped foreign-network queries                  |
 | `clients`    | int               | number of distinct clients active that hour        |
 
 Ordering: by `hour_start` descending. Example: `GET /stats/site?hours=168` for the last week of site-wide hourly totals.
@@ -532,6 +605,8 @@ collapse to a single row). Read-only.
 → `{ "status": "ok", "domains": [...], "total": N }` where `total` is the number of rows returned.
 
 **Limit (optional):** `limit=<int>` — caps the number of rows (defaults to `100`, the top-100 most recent). A non-integer value returns `422`.
+
+Clients with `flag_new_domains` set to `false` (see [§7.7](#77-hosts)) are omitted entirely — their new domains never appear in this feed, and the limit is applied after they are filtered out.
 
 Ordering: by `first_seen` descending. Example: `GET /stats/new-domains/recent` (top 100) or `GET /stats/new-domains/recent?limit=25`.
 
@@ -681,6 +756,86 @@ to clear — a freshly started server always begins with an empty cache.
 
 ---
 
+### 7.12 Recent client queries (live)
+
+Individual DNS query **events** for one client — the actual request/response
+pairs the resolver handled, newest first. Unlike the aggregated query log
+(§7.5), each row is a single query and includes the **answer** the client
+received. Events are written by the DNS worker in short batches and retained for
+a rolling window (**~1 hour**), so this endpoint is for live/recent activity, not
+long-term history.
+
+**Query event object:**
+| field       | type              | notes                                                        |
+| ----------- | ----------------- | ------------------------------------------------------------ |
+| `timestamp` | string (datetime) | local wall-clock time the query was handled                  |
+| `client`    | string            | source IP (echoes the path parameter)                        |
+| `domain`    | string            | the queried name                                             |
+| `qtype`     | string            | DNS record type, e.g. `A`, `AAAA`, `MX`                      |
+| `rcode`     | string            | response code, e.g. `NOERROR`, `NXDOMAIN`, `SERVFAIL`        |
+| `response`  | string            | comma-joined answer records (e.g. `93.184.216.34`); empty when there was no answer (blocked / denied / NODATA) |
+
+Ordering: by `timestamp` descending, then `id`.
+
+#### `GET /clients/{ip}/queries`
+Return the queries this client made in the last `seconds`. →
+`{ "status": "ok", "client": "10.0.0.5", "seconds": 60, "queries": [...], "total": N }`
+
+- `{ip}` must be a valid IP address (`422 validation_error` otherwise).
+- `seconds` (optional int, default `60`): lookback window; must be positive.
+  Because events are retained ~1 hour, longer windows just return everything
+  still retained.
+- `limit` (optional int): cap the number of rows returned (most recent first);
+  must be positive when given. There is no `offset`/paging — this is a live tail.
+
+> No streaming/websockets: poll this endpoint to tail a client's recent lookups.
+> A busy client can produce many rows, so pass `limit` (and a small `seconds`)
+> when you only need the latest few.
+
+---
+
+### 7.13 Trusted networks
+
+Source-subnet allowlist. When **any** trusted network is configured the DNS
+server answers only clients whose source IP falls inside one of the subnets and
+**silently drops** every other query — no reply, over both UDP and TCP, and the
+client is not recorded as a host. Those drops are counted as the `foreign` series
+in §7.8 (`GET /stats` / `GET /stats/site`). With **no** rows configured the
+resolver answers every client, so the feature is opt-in. Changes are picked up by
+the DNS worker within `refresh_seconds`.
+
+**Trusted-network object:**
+| field         | type              | notes                                               |
+| ------------- | ----------------- | --------------------------------------------------- |
+| `id`          | int               |                                                     |
+| `cidr`        | string            | IPv4/IPv6 network in CIDR form, e.g. `10.2.10.0/24` |
+| `description` | string \| null    | optional label                                      |
+| `created_at`  | string (datetime) |                                                     |
+| `updated_at`  | string (datetime) |                                                     |
+
+Ordering: by `cidr`, then `id`.
+
+#### `GET /trusted-networks`
+List, paginated. → `{ "status": "ok", "trusted_networks": [...], "total": N }`
+
+#### `GET /trusted-networks/{id}`
+→ `200 { "status": "ok", "trusted_network": {...} }` or `404`.
+
+#### `POST /trusted-networks`
+Create. → `201 { "status": "ok", "trusted_network": {...} }`
+```json
+{ "cidr": "10.2.10.0/24", "description": "home LAN" }
+```
+Required: `cidr`. Validation: `cidr` must be a valid IPv4/IPv6 network; host bits
+are normalized away (`10.2.10.5/24` → `10.2.10.0/24`) and a bare address becomes a
+`/32` (or `/128`). Unknown fields rejected. Errors: `422 validation_error`,
+`409 conflict` (this subnet is already trusted).
+
+#### `DELETE /trusted-networks/{id}`
+→ `200 { "status": "ok", "deleted": <id> }` or `404`.
+
+---
+
 ## 8. Enumerations reference
 
 | Enum              | Allowed values                                      | Used by                      |
@@ -699,11 +854,12 @@ everything except names on an enabled blocklist (those return `NXDOMAIN`).
 
 - **Treat timestamps as local wall-clock**, not UTC. They have no offset suffix. If you need correct ordering across DST or zones, rely on the server-provided ordering rather than reparsing.
 - **Map errors on `code`, not `error` text.** The `error`/`detail` strings are for display and may change.
-- **Creates that can 409:** policies (duplicate `client`+`domain`) and blocklists (duplicate `name`). Surface these as friendly "already exists" messages. Upstreams never 409.
+- **Creates that can 409:** policies (duplicate `client`+`domain`), blocklists (duplicate `name`), and trusted networks (duplicate `cidr`). Surface these as friendly "already exists" messages. Upstreams never 409.
 - **`PUT` is a partial update** (send only changed fields). Sending `null` explicitly will set a nullable field to null; omitting a field leaves it unchanged.
 - **Unknown fields are rejected** with `422` on every write endpoint — don't send extra keys (e.g. read-only blocklist stats, or `id`/timestamps).
 - **Blocklist refresh is synchronous and can be slow/large;** show a spinner and handle `502 download_failed` with the returned `detail`.
 - **`GET /blocklists/{id}/domains` can return huge arrays** — always paginate.
 - **`DELETE /queries` clears everything** and returns a row count — guard it behind confirmation.
+- **Recent client queries are short-lived.** `GET /clients/{ip}/queries` only returns events from the last ~1 hour (older ones are pruned); it's a live tail, not a historical log — use `GET /queries` / `GET /requests` for aggregates.
 - **New blocklists aren't downloaded on create;** either wait for the downloader's cadence or call the refresh endpoint to populate `domain_count`.
 - **No streaming/websockets.** Query stats and blocklist status update via polling; poll `GET /queries` and `GET /blocklists` at whatever interval suits the UI.

@@ -36,3 +36,8 @@ def test_host_update_rejects_unknown_field() -> None:
 def test_host_update_accepts_excluded_from_blocklist() -> None:
     assert HostUpdate.model_validate({"excluded_from_blocklist": True}).excluded_from_blocklist is True
     assert HostUpdate.model_validate({}).excluded_from_blocklist is None
+
+
+def test_host_update_accepts_flag_new_domains() -> None:
+    assert HostUpdate.model_validate({"flag_new_domains": False}).flag_new_domains is False
+    assert HostUpdate.model_validate({}).flag_new_domains is None

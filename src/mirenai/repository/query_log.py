@@ -7,14 +7,18 @@ is incremented and ``last_seen`` / ``last_action`` are refreshed.
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, cast
 
-from sqlalchemy import ColumnElement, delete, func, or_, select
+from sqlalchemy import ColumnElement, CursorResult, delete, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mirenai.db import session_scope
 from mirenai.domain.querybuffer import QueryAgg
 from mirenai.repository.models import QueryLog
+
+# SQLite caps host parameters per statement; chunk domain IN() lookups to stay under it.
+_DOMAIN_CHUNK = 500
 
 
 def _to_dict(row: QueryLog) -> dict[str, Any]:
@@ -93,5 +97,64 @@ def count_queries(search: str | None = None) -> int:
 
 def reset_queries() -> int:
     with session_scope() as session:
-        result = session.execute(delete(QueryLog))
+        # Session.execute(DELETE) is typed Result but returns CursorResult at runtime.
+        result = cast(CursorResult[Any], session.execute(delete(QueryLog)))
         return result.rowcount or 0
+
+
+def aggregate_domain_totals() -> list[dict[str, Any]]:
+    """Aggregate the query log by domain, most-queried first.
+
+    One row per domain: the summed ``count`` across every client and query type,
+    the earliest ``first_seen`` and the latest ``last_seen``.
+    """
+    total = func.sum(QueryLog.count)
+    stmt = (
+        select(
+            QueryLog.domain,
+            total.label("count"),
+            func.min(QueryLog.first_seen).label("first_seen"),
+            func.max(QueryLog.last_seen).label("last_seen"),
+        )
+        .group_by(QueryLog.domain)
+        .order_by(total.desc(), QueryLog.domain)
+    )
+    with session_scope() as session:
+        rows = session.execute(stmt).all()
+        return [
+            {
+                "domain": domain,
+                "count": int(count or 0),
+                "first_seen": first_seen.isoformat(),
+                "last_seen": last_seen.isoformat(),
+            }
+            for domain, count, first_seen, last_seen in rows
+        ]
+
+
+def clients_for_domains(domains: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
+    """Per-domain client breakdown for ``domains``, most-active client first.
+
+    Returns a mapping from each domain to a list of ``{client, count}`` with the
+    summed query ``count`` per client across query types. Domains with no rows in
+    the query log are omitted.
+    """
+    if not domains:
+        return {}
+    total = func.sum(QueryLog.count)
+    ordered = list(domains)
+    result: dict[str, list[dict[str, Any]]] = {}
+    with session_scope() as session:
+        for start in range(0, len(ordered), _DOMAIN_CHUNK):
+            chunk = ordered[start : start + _DOMAIN_CHUNK]
+            stmt = (
+                select(QueryLog.domain, QueryLog.client, total.label("count"))
+                .where(QueryLog.domain.in_(chunk))
+                .group_by(QueryLog.domain, QueryLog.client)
+                .order_by(QueryLog.domain, total.desc(), QueryLog.client)
+            )
+            for domain, client, count in session.execute(stmt).all():
+                result.setdefault(domain, []).append(
+                    {"client": client, "count": int(count or 0)}
+                )
+    return result

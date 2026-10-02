@@ -6,6 +6,7 @@ from mirenai.api.errors import read_int_query, read_pagination
 from mirenai.repository import blocklists as blocklists_repo
 from mirenai.repository import client_requests as requests_repo
 from mirenai.repository import client_stats as repo
+from mirenai.repository import hosts as hosts_repo
 from mirenai.repository import runtime_stats as runtime_repo
 from mirenai.repository import upstream_stats as upstream_repo
 from mirenai.repository.upstreams import load_upstreams
@@ -62,7 +63,10 @@ def register_stats_routes(app: Bottle) -> None:
         limit, err = read_int_query("limit")
         if err is not None:
             return err
-        rows = requests_repo.list_recent_new_domains(limit=limit if limit is not None else 100)
+        rows = requests_repo.list_recent_new_domains(
+            limit=limit if limit is not None else 100,
+            exclude_clients=hosts_repo.load_new_domain_unmonitored(),
+        )
         blocklists_repo.annotate_blocked(rows)
         return {"status": "ok", "domains": rows, "total": len(rows)}
 

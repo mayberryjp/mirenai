@@ -31,6 +31,7 @@ def _to_dict(host: Host) -> dict[str, Any]:
         "icon": host.icon,
         "mac_address": host.mac_address,
         "excluded_from_blocklist": host.excluded_from_blocklist,
+        "flag_new_domains": host.flag_new_domains,
         "query_count": host.query_count,
         "first_seen": host.first_seen.isoformat(),
         "last_seen": host.last_seen.isoformat(),
@@ -45,6 +46,13 @@ def load_known_hosts() -> set[str]:
 def load_blocklist_excluded() -> frozenset[str]:
     """IPs whose queries bypass the blocklist (``excluded_from_blocklist`` is set)."""
     stmt = select(Host.ip).where(Host.excluded_from_blocklist.is_(True))
+    with hosts_session_scope() as session:
+        return frozenset(session.scalars(stmt).all())
+
+
+def load_new_domain_unmonitored() -> frozenset[str]:
+    """IPs excluded from the recent-new-domains feed (``flag_new_domains`` is cleared)."""
+    stmt = select(Host.ip).where(Host.flag_new_domains.is_(False))
     with hosts_session_scope() as session:
         return frozenset(session.scalars(stmt).all())
 
@@ -96,6 +104,8 @@ def update_host(host_id: int, data: dict[str, Any]) -> dict[str, Any] | None:
             host.icon = data["icon"]
         if data.get("excluded_from_blocklist") is not None:
             host.excluded_from_blocklist = data["excluded_from_blocklist"]
+        if data.get("flag_new_domains") is not None:
+            host.flag_new_domains = data["flag_new_domains"]
         session.flush()
         return _to_dict(host)
 

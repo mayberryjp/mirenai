@@ -29,13 +29,18 @@ from one policy table.
   needs the real answer.
 - **IPv4-only mode** — one toggle makes every AAAA query come back empty (NODATA),
   so clients fall back to A instead of hanging.
+- **Trusted-network screening** — list the source subnets (CIDR) you serve and
+  every query from outside them is silently dropped over both UDP and TCP, with a
+  "foreign networks" counter in the per-client and site-wide graphs. Configure no
+  subnets and it answers everyone, as before.
 - **Caching that stays out of the way** — in-memory, LRU, TTL-aware, thread-safe.
   Turn it off at runtime or flush it from the API.
 - **Live configuration** — policies, upstreams, blocklists, and settings live in
   the database and are re-read on a timer. Change a rule and it takes effect in
   seconds, no restart.
-- **Real visibility** — per-client query counts, a searchable query log, a feed of
-  newly-seen domains, and runtime gauges like cache size and blocklist size.
+- **Real visibility** — per-client query counts, a searchable query log, a live
+  per-client request/response tail, a feed of newly-seen domains, and runtime
+  gauges like cache size and blocklist size.
 - **Device names, optionally** — sync friendly names and icons for each client
   from [Sando](https://github.com/mayberryjp/sando).
 - **One moving part** — the DNS server, blocklist downloader, and API run together
@@ -72,7 +77,14 @@ touching its per-domain exceptions.
 
 **Blocklists are global.** Enabled blocklists apply to *every* client's queries by
 default, so you don't need a `blocklist` policy row to get filtering. To exempt a
-device, set `excluded_from_blocklist` on its host.
+device, set `excluded_from_blocklist` on its host. To exempt a single *domain* from
+every blocklist, add it as an override (`POST /blocklists/overrides`); override domains
+are stripped from each list when it is downloaded, so the exemption applies on the
+list's next refresh rather than at query time.
+
+**New-domain monitoring is per-client.** A client's newly-seen domains show up in
+`GET /stats/new-domains/recent` by default; clear `flag_new_domains` on its host to
+hide that client's new domains from the feed.
 
 **New clients** are picked up automatically. The first time an IP sends a query it
 gets an explicit `(client, *, <default_action>)` row mirroring the current site
@@ -149,12 +161,14 @@ per-endpoint shapes.
 | Client modes | `GET/PUT /clients/{ip}/mode` — allow-all / block-all shortcut                                         |
 | Hosts        | `GET /hosts`, `GET/PUT/DELETE /hosts/{id}`, `POST /hosts/{id}/sync` (Sando)                           |
 | Upstreams    | `GET/POST /upstreams`, `PUT/DELETE /upstreams/{id}`, `POST /upstreams/{id}/check` (RTT probe)         |
-| Blocklists   | `GET/POST /blocklists`, `GET/PUT/DELETE /blocklists/{id}`, `GET /blocklists/{id}/domains`, `GET /blocklists/search`, `POST /blocklists/{id}/refresh` |
+| Blocklists   | `GET/POST /blocklists`, `GET/PUT/DELETE /blocklists/{id}`, `GET /blocklists/{id}/domains`, `GET /blocklists/search`, `POST /blocklists/{id}/refresh`, `GET/POST /blocklists/overrides`, `DELETE /blocklists/overrides/{id}` |
 | Query log    | `GET /queries` (paginated, `?search=` by client or domain), `DELETE /queries`                        |
+| Recent queries | `GET /clients/{ip}/queries` — live per-client request/response events (`?seconds=`, `?limit=`)     |
 | Stats        | `GET /stats`, `GET /stats/site`, `GET /stats/new-domains`, `GET /stats/new-domains/recent`, `GET /stats/runtime`, `GET /stats/upstreams` |
 | Requests     | `GET /requests` — top `(client, domain, qtype)` objects                                              |
 | Cache        | `POST /cache/flush`                                                                                   |
 | Settings     | `GET/PUT /settings`                                                                                   |
+| Trusted networks | `GET/POST /trusted-networks`, `GET/DELETE /trusted-networks/{id}` — source-subnet allowlist      |
 
 List endpoints take optional `limit`/`offset`.
 
@@ -193,6 +207,11 @@ A few specifics worth knowing:
 - **Blocklists.** Hosts format (`0.0.0.0 ads.example.com`) and domain-only lines
   are both accepted; `#` comments, blank lines, and bare IPs are ignored. Listing
   `example.com` also blocks its subdomains.
+- **Trusted networks.** With no `trusted-networks` rows the resolver answers every
+  client. Add one or more source subnets (e.g. `10.2.10.0/24`, multiple allowed)
+  and any query from outside them is dropped before parsing — no reply on UDP or
+  TCP, and no host record — and counted under the `foreign` series in `GET /stats`
+  and `GET /stats/site`. The list is reloaded on the `refresh_seconds` timer.
 - **Overrides** return `A`/`AAAA` records built from the IP(s) in
   `override_response` — the common sinkhole case.
 - **Timestamps** are stored and returned in the container's local time zone via

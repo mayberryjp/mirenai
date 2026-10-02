@@ -1,4 +1,10 @@
-from mirenai.domain.blocklist import detect_format, is_blocked, parse_blocklist
+from mirenai.domain.blocklist import (
+    apply_overrides,
+    detect_format,
+    is_blocked,
+    normalize_override_domain,
+    parse_blocklist,
+)
 
 _SAMPLE = """\
 # Title: KADhosts
@@ -106,5 +112,34 @@ def test_parse_adblock_strips_modifiers_skips_exceptions_and_cosmetics() -> None
 
 def test_parse_adblock_dedupes_against_hosts_format() -> None:
     assert parse_blocklist("0.0.0.0 a.com\n||a.com^\n") == ["a.com"]
+
+
+def test_apply_overrides_removes_listed_domains_preserving_order() -> None:
+    domains = ["aria.microsoft.com", "ads.example.com", "tracker.example.net"]
+    assert apply_overrides(domains, {"aria.microsoft.com"}) == [
+        "ads.example.com",
+        "tracker.example.net",
+    ]
+
+
+def test_apply_overrides_no_overrides_returns_all() -> None:
+    domains = ["a.com", "b.com"]
+    assert apply_overrides(domains, frozenset()) == ["a.com", "b.com"]
+
+
+def test_apply_overrides_matches_exactly_not_subdomains() -> None:
+    # Overriding the parent does not strip a more specific listed entry.
+    assert apply_overrides(["ads.example.com"], {"example.com"}) == ["ads.example.com"]
+
+
+def test_normalize_override_domain_normalizes_case_and_trailing_dot() -> None:
+    assert normalize_override_domain("Ads.Example.COM.") == "ads.example.com"
+
+
+def test_normalize_override_domain_rejects_invalid() -> None:
+    assert normalize_override_domain("not a domain") is None
+    assert normalize_override_domain("localhost") is None
+    assert normalize_override_domain("0.0.0.0") is None
+
 
 

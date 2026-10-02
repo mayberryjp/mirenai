@@ -55,6 +55,7 @@ def _to_dict(row: ClientHourlyStat) -> dict[str, Any]:
         "denied": row.denied,
         "blocked": row.blocked,
         "servfail": row.servfail,
+        "foreign": row.foreign,
     }
 
 
@@ -70,6 +71,7 @@ def _zero_client_row(hour_iso: str, client: str) -> dict[str, Any]:
         "denied": 0,
         "blocked": 0,
         "servfail": 0,
+        "foreign": 0,
     }
 
 
@@ -88,6 +90,7 @@ def record_client_stats(rows: list[ClientStatAgg]) -> None:
                 denied=row.denied,
                 blocked=row.blocked,
                 servfail=row.servfail,
+                foreign=row.foreign,
             )
             stmt = stmt.on_conflict_do_update(
                 index_elements=["hour_start", "client"],
@@ -99,6 +102,7 @@ def record_client_stats(rows: list[ClientStatAgg]) -> None:
                     "denied": ClientHourlyStat.denied + stmt.excluded.denied,
                     "blocked": ClientHourlyStat.blocked + stmt.excluded.blocked,
                     "servfail": ClientHourlyStat.servfail + stmt.excluded.servfail,
+                    "foreign": ClientHourlyStat.foreign + stmt.excluded.foreign,
                 },
             )
             session.execute(stmt)
@@ -151,6 +155,7 @@ def _site_to_dict(row: Any) -> dict[str, Any]:
         "denied": int(row.denied),
         "blocked": int(row.blocked),
         "servfail": int(row.servfail),
+        "foreign": int(row.foreign),
         "clients": int(row.clients),
     }
 
@@ -165,6 +170,7 @@ def _zero_site_row(hour_iso: str) -> dict[str, Any]:
         "denied": 0,
         "blocked": 0,
         "servfail": 0,
+        "foreign": 0,
         "clients": 0,
     }
 
@@ -183,6 +189,7 @@ def list_site_hourly_stats(
         func.sum(ClientHourlyStat.denied).label("denied"),
         func.sum(ClientHourlyStat.blocked).label("blocked"),
         func.sum(ClientHourlyStat.servfail).label("servfail"),
+        func.sum(ClientHourlyStat.foreign).label("foreign"),
         func.count(func.distinct(ClientHourlyStat.client)).label("clients"),
     )
     if hours is not None:

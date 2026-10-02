@@ -6,24 +6,29 @@ from webtest import TestApp
 
 from mirenai import config, db
 from mirenai.api.app import create_app
-from mirenai.db import Base, BlocklistBase, session_scope
+from mirenai.db import Base, BlocklistBase, HostsBase, hosts_session_scope, session_scope
 from mirenai.repository import blocklists as repo
-from mirenai.repository.models import ClientRequest, QueryLog
+from mirenai.repository.models import ClientRequest, Host, QueryLog
 
 
 @pytest.fixture()
 def temp_dbs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     config_path = tmp_path / "mirenai.db"
     blocklist_path = tmp_path / "blocklist.db"
+    hosts_path = tmp_path / "localhosts.db"
     monkeypatch.setattr(config.settings, "database_url", f"sqlite:///{config_path}")
     monkeypatch.setattr(config.settings, "blocklist_database_url", f"sqlite:///{blocklist_path}")
+    monkeypatch.setattr(config.settings, "localhosts_database_url", f"sqlite:///{hosts_path}")
     # Force the cached engines/session factories to rebuild against the temp DBs.
     monkeypatch.setattr(db, "_engine", None)
     monkeypatch.setattr(db, "_session_factory", None)
     monkeypatch.setattr(db, "_blocklist_engine", None)
     monkeypatch.setattr(db, "_blocklist_session_factory", None)
+    monkeypatch.setattr(db, "_hosts_engine", None)
+    monkeypatch.setattr(db, "_hosts_session_factory", None)
     Base.metadata.create_all(db.get_engine())
     BlocklistBase.metadata.create_all(db.get_blocklist_engine())
+    HostsBase.metadata.create_all(db.get_hosts_engine())
     yield
 
 
@@ -64,6 +69,11 @@ def _add_request(client: str, domain: str, qtype: str = "A") -> None:
                 last_seen=now,
             )
         )
+
+
+def _add_host(ip: str, *, flag_new_domains: bool = True) -> None:
+    with hosts_session_scope() as session:
+        session.add(Host(ip=ip, flag_new_domains=flag_new_domains))
 
 
 def test_find_blocked_domains_exact_match_enabled_only(temp_dbs: None) -> None:
@@ -118,3 +128,16 @@ def test_recent_new_domains_route_includes_blocked(temp_dbs: None) -> None:
     body = app.get("/stats/new-domains/recent").json
     flags = {row["domain"]: row["blocked"] for row in body["domains"]}
     assert flags == {"ads.example.com": True, "safe.org": False}
+
+
+def test_recent_new_domains_route_excludes_unmonitored_clients(temp_dbs: None) -> None:
+    _seed_list(["example.com"])
+    _add_request("10.0.0.1", "watched.com")
+    _add_request("10.0.0.2", "hidden.com")
+    _add_host("10.0.0.1")  # flag_new_domains defaults to True -> stays visible
+    _add_host("10.0.0.2", flag_new_domains=False)  # opted out of new-domain monitoring
+    app = TestApp(create_app())
+    body = app.get("/stats/new-domains/recent").json
+    domains = {row["domain"] for row in body["domains"]}
+    assert domains == {"watched.com"}
+    assert body["total"] == 1

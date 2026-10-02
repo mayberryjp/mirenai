@@ -14,6 +14,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Float,
+    Index,
     Integer,
     String,
     Text,
@@ -66,6 +67,27 @@ class Upstream(Base):
     )
 
 
+class TrustedNetwork(Base):
+    """A source subnet (CIDR) permitted to query the resolver.
+
+    When any rows exist the DNS server answers only clients whose address falls
+    inside one of them and silently drops everything else; an empty table trusts
+    all clients.
+    """
+
+    __tablename__ = "trusted_networks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    cidr: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW, onupdate=_LOCAL_NOW
+    )
+
+
 class QueryLog(Base):
     __tablename__ = "query_log"
     __table_args__ = (
@@ -83,6 +105,31 @@ class QueryLog(Base):
     )
     last_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+
+
+class ClientQueryEvent(Base):
+    """Individual DNS query/response events for a client, kept for a short window.
+
+    Unlike :class:`QueryLog` (aggregated counts), this stores one row per query with
+    the answer returned, so the API can replay a client's most recent lookups. Rows
+    are written in batches by the DNS worker and pruned to a short retention window
+    (see ``mirenai.repository.query_events.RETENTION_SECONDS``).
+    """
+
+    __tablename__ = "client_query_events"
+    __table_args__ = (
+        Index("ix_client_query_events_client_created", "client", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client: Mapped[str] = mapped_column(String(64), nullable=False)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    qtype: Mapped[str] = mapped_column(String(16), nullable=False)
+    rcode: Mapped[str] = mapped_column(String(16), nullable=False)
+    response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True, server_default=_LOCAL_NOW
     )
 
 
@@ -156,6 +203,9 @@ class ClientHourlyStat(Base):
     denied: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     blocked: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     servfail: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    foreign: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
 
 
 class ClientRequest(Base):
@@ -230,6 +280,26 @@ class Blocklist(Base):
     )
 
 
+class BlocklistOverride(Base):
+    """A domain exempted from every blocklist (an allowlist entry).
+
+    Override domains are stripped from each blocklist's parsed domains before they
+    are written to the blocklist database, so the exemption is applied when lists
+    are downloaded rather than on every DNS query.
+    """
+
+    __tablename__ = "blocklist_overrides"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW, onupdate=_LOCAL_NOW
+    )
+
+
 class BlocklistDomain(BlocklistBase):
     """A single blocked domain, stored in the separate blocklist database.
 
@@ -253,6 +323,8 @@ class Host(HostsBase):
     One row per source IP: ``query_count`` accumulates across queries, ``first_seen``
     is set once on insert, and ``last_seen`` is refreshed on every flush.
     ``excluded_from_blocklist`` exempts the client from blocklist filtering when set.
+    ``flag_new_domains`` (on by default) controls whether this client's newly-seen
+    domains surface in the recent-new-domains feed.
     """
 
     __tablename__ = "hosts"
@@ -264,6 +336,9 @@ class Host(HostsBase):
     mac_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
     excluded_from_blocklist: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("0")
+    )
+    flag_new_domains: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("1")
     )
     query_count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     first_seen: Mapped[datetime] = mapped_column(

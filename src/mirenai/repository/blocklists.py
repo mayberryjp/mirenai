@@ -256,6 +256,60 @@ def find_blocked_domains(candidates: Iterable[str]) -> frozenset[str]:
     return frozenset(matched)
 
 
+def find_domain_sources(candidates: Iterable[str]) -> dict[str, list[dict[str, Any]]]:
+    """Map each blocked name in ``candidates`` to the enabled blocklist(s) listing it.
+
+    A name is blocked when it or any parent suffix is on an enabled blocklist (the
+    resolver's suffix semantics). Returns a mapping from the original candidate name
+    to a list of ``{blocklist_id, blocklist_name, matched_domain}`` sources, where
+    ``matched_domain`` is the listed suffix that caused the block. Names that match
+    nothing are absent from the result.
+    """
+    suffix_candidates: dict[str, set[str]] = {}
+    for candidate in candidates:
+        for suffix in domain_suffixes(candidate):
+            suffix_candidates.setdefault(suffix, set()).add(candidate)
+    if not suffix_candidates:
+        return {}
+    with session_scope() as session:
+        enabled_ids = list(
+            session.scalars(select(Blocklist.id).where(Blocklist.enabled.is_(True))).all()
+        )
+    if not enabled_ids:
+        return {}
+    suffixes = list(suffix_candidates)
+    matches: list[tuple[int, str]] = []
+    with blocklist_session_scope() as session:
+        for start in range(0, len(suffixes), _MATCH_CHUNK):
+            chunk = suffixes[start : start + _MATCH_CHUNK]
+            rows = session.execute(
+                select(BlocklistDomain.blocklist_id, BlocklistDomain.domain)
+                .where(BlocklistDomain.blocklist_id.in_(enabled_ids))
+                .where(BlocklistDomain.domain.in_(chunk))
+            ).all()
+            matches.extend((blocklist_id, domain) for blocklist_id, domain in rows)
+    if not matches:
+        return {}
+    names = _blocklist_names({blocklist_id for blocklist_id, _ in matches})
+    sources: dict[str, list[dict[str, Any]]] = {}
+    seen: dict[str, set[tuple[int, str]]] = {}
+    for blocklist_id, matched_domain in matches:
+        for candidate in suffix_candidates.get(matched_domain, ()):
+            key = (blocklist_id, matched_domain)
+            dedupe = seen.setdefault(candidate, set())
+            if key in dedupe:
+                continue
+            dedupe.add(key)
+            sources.setdefault(candidate, []).append(
+                {
+                    "blocklist_id": blocklist_id,
+                    "blocklist_name": names.get(blocklist_id),
+                    "matched_domain": matched_domain,
+                }
+            )
+    return sources
+
+
 def annotate_blocked(rows: list[dict[str, Any]], key: str = "domain") -> list[dict[str, Any]]:
     """Add a boolean ``blocked`` field to each row from ``row[key]``.
 

@@ -3,9 +3,10 @@ from dnslib import QTYPE, RCODE, RR, A, DNSRecord
 
 from mirenai.domain.cache import TTLCache
 from mirenai.domain.clientrequests import ClientRequestBuffer
-from mirenai.domain.clientstats import ClientStatsBuffer
+from mirenai.domain.clientstats import ClientStatAgg, ClientStatsBuffer
 from mirenai.domain.policy import PolicyRule
 from mirenai.domain.querybuffer import QueryAgg, QueryBuffer
+from mirenai.domain.queryevents import QueryEvent, QueryEventBuffer
 from mirenai.domain.resolver import DnsResolver
 from mirenai.domain.state import RuntimeSettings, RuntimeState, UpstreamServer
 from mirenai.domain.upstreamstats import UpstreamRttAgg, UpstreamRttBuffer
@@ -18,6 +19,9 @@ def _make_resolver(
     blocklist: frozenset[str] | None = None,
     blocklist_excluded: frozenset[str] | None = None,
     rtt: UpstreamRttBuffer | None = None,
+    events: QueryEventBuffer | None = None,
+    trusted_networks: list[str] | None = None,
+    stats: ClientStatsBuffer | None = None,
 ) -> DnsResolver:
     effective = settings or RuntimeSettings()
     state = RuntimeState(
@@ -26,13 +30,40 @@ def _make_resolver(
         load_upstreams=lambda: upstreams or [],
         load_blocklist=lambda: blocklist or frozenset(),
         load_blocklist_excluded=lambda: blocklist_excluded or frozenset(),
+        load_trusted_networks=lambda: trusted_networks or [],
     )
     buffer = QueryBuffer(flush=lambda rows: None, flush_seconds=5)
-    stats = ClientStatsBuffer(flush=lambda rows: None, flush_seconds=3600)
+    stats_buffer = stats or ClientStatsBuffer(flush=lambda rows: None, flush_seconds=3600)
     requests = ClientRequestBuffer(flush=lambda rows: None, flush_seconds=3600)
     rtt_buffer = rtt or UpstreamRttBuffer(flush=lambda rows: None, flush_seconds=3600)
+    events_buffer = events or QueryEventBuffer(flush=lambda rows: None, flush_seconds=3600)
     cache: TTLCache[bytes] = TTLCache(100)
-    return DnsResolver(state, cache, buffer, stats, requests, rtt_buffer)
+    return DnsResolver(state, cache, buffer, stats_buffer, requests, rtt_buffer, events_buffer)
+
+
+def test_is_trusted_honors_configured_subnets() -> None:
+    resolver = _make_resolver([PolicyRule("*", "*", "forward")], trusted_networks=["10.2.10.0/24"])
+    assert resolver.is_trusted("10.2.10.5") is True
+    assert resolver.is_trusted("192.168.1.1") is False
+
+
+def test_is_trusted_without_subnets_trusts_everyone() -> None:
+    resolver = _make_resolver([PolicyRule("*", "*", "forward")])
+    assert resolver.is_trusted("203.0.113.9") is True
+
+
+def test_record_foreign_increments_foreign_stat() -> None:
+    captured: list[ClientStatAgg] = []
+    stats = ClientStatsBuffer(flush=captured.extend, flush_seconds=3600)
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")], trusted_networks=["10.2.10.0/24"], stats=stats
+    )
+    resolver.record_foreign("192.168.1.50")
+    stats.flush()
+    assert len(captured) == 1
+    assert captured[0].client == "foreign"
+    assert captured[0].foreign == 1
+    assert captured[0].total == 1
 
 
 def test_forward_records_upstream_rtt(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -51,6 +82,22 @@ def test_forward_records_upstream_rtt(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(captured) == 1
     assert captured[0].address == "1.1.1.1"
     assert captured[0].samples == 1
+
+
+def test_handle_records_query_event() -> None:
+    captured: list[QueryEvent] = []
+    events = QueryEventBuffer(flush=captured.extend, flush_seconds=3600)
+    resolver = _make_resolver(
+        [PolicyRule("*", "ads.example", "override", "0.0.0.0", 60)], events=events
+    )
+    resolver.handle(DNSRecord.question("ads.example", "A"), "10.0.0.1")
+    events.flush()
+    assert len(captured) == 1
+    assert captured[0].client == "10.0.0.1"
+    assert captured[0].domain == "ads.example"
+    assert captured[0].qtype == "A"
+    assert captured[0].rcode == "NOERROR"
+    assert captured[0].response == "0.0.0.0"
 
 
 def test_deny_returns_nxdomain() -> None:

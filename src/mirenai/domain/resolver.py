@@ -26,6 +26,7 @@ from mirenai.domain.policy import (
     select_policy,
 )
 from mirenai.domain.querybuffer import QueryBuffer
+from mirenai.domain.queryevents import QueryEventBuffer
 from mirenai.domain.state import RuntimeSettings, RuntimeState, UpstreamServer
 from mirenai.domain.upstreamstats import UpstreamRttBuffer
 from mirenai.logging import get_logger
@@ -47,6 +48,11 @@ def _rcode_name(value: int) -> str:
         return str(value)
 
 
+def _answer_summary(reply: DNSRecord) -> str:
+    """Comma-join the answer section's rdata (empty when there are no answers)."""
+    return ", ".join(str(record.rdata) for record in reply.rr)
+
+
 def _cache_key(qname: str, qtype: int, qclass: int) -> str:
     return f"{normalize_domain(qname)}|{qtype}|{qclass}"
 
@@ -60,6 +66,7 @@ class DnsResolver:
         stats: ClientStatsBuffer,
         requests: ClientRequestBuffer,
         rtt: UpstreamRttBuffer,
+        events: QueryEventBuffer,
     ) -> None:
         self._state = state
         self._cache = cache
@@ -67,6 +74,17 @@ class DnsResolver:
         self._stats = stats
         self._requests = requests
         self._rtt = rtt
+        self._events = events
+
+    def is_trusted(self, client_ip: str) -> bool:
+        """Whether a query from ``client_ip`` should be answered at all."""
+        return self._state.network_filter.is_trusted(client_ip)
+
+    def record_foreign(self, client_ip: str) -> None:
+        """Count a query dropped for coming from an untrusted source network."""
+        self._stats.add_foreign()
+        if self._state.settings.log_queries:
+            log.info("dropped query from untrusted network %s", client_ip)
 
     def handle(self, request: DNSRecord, client_ip: str) -> DNSRecord:
         question = request.q
@@ -97,6 +115,9 @@ class DnsResolver:
         self._buffer.add(client_ip, qname, qtype_name, result)
         self._stats.add(client_ip, result)
         self._requests.add(client_ip, qname, qtype_name)
+        self._events.add(
+            client_ip, qname, qtype_name, _rcode_name(reply.header.rcode), _answer_summary(reply)
+        )
         if settings.log_queries:
             log.info(
                 "query client=%s name=%s type=%s action=%s rcode=%s answers=%d",

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from ipaddress import ip_address
+from ipaddress import ip_address, ip_network
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from mirenai.domain.blocklist import normalize_override_domain
 from mirenai.domain.policy import VALID_ACTIONS, WILDCARD
 
 _VALID_PROTOCOLS = {"udp", "tcp"}
@@ -37,6 +38,14 @@ def _check_interval_hours(value: int) -> int:
     if value < 1:
         raise ValueError("update_interval_hours must be at least 1")
     return value
+
+
+def _check_cidr(value: str) -> str:
+    try:
+        # strict=False canonicalizes host bits (10.2.10.5/24 -> 10.2.10.0/24).
+        return str(ip_network(value, strict=False))
+    except ValueError as exc:
+        raise ValueError("cidr must be a valid IPv4/IPv6 network, e.g. 10.2.10.0/24") from exc
 
 
 class PolicyCreate(BaseModel):
@@ -178,6 +187,7 @@ class HostUpdate(BaseModel):
     device_name: str | None = None
     icon: str | None = None
     excluded_from_blocklist: bool | None = None
+    flag_new_domains: bool | None = None
 
     @field_validator("device_name")
     @classmethod
@@ -276,3 +286,37 @@ class BlocklistUpdate(BaseModel):
     @classmethod
     def _validate_interval(cls, value: int | None) -> int | None:
         return _check_interval_hours(value) if value is not None else value
+
+
+class BlocklistOverrideCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    domain: str
+
+    @field_validator("domain")
+    @classmethod
+    def _validate_domain(cls, value: str) -> str:
+        normalized = normalize_override_domain(value)
+        if normalized is None:
+            raise ValueError("domain must be a valid domain name")
+        return normalized
+
+
+class TrustedNetworkCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cidr: str
+    description: str | None = None
+
+    @field_validator("cidr")
+    @classmethod
+    def _validate_cidr(cls, value: str) -> str:
+        return _check_cidr(value)
+
+    @field_validator("description")
+    @classmethod
+    def _validate_description(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        trimmed = value.strip()
+        return trimmed or None
