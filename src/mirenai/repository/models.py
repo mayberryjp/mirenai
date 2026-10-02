@@ -100,6 +100,7 @@ class QueryLog(Base):
     qtype: Mapped[str] = mapped_column(String(16), nullable=False)
     count: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
     last_action: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    last_response: Mapped[str | None] = mapped_column(Text, nullable=True)
     first_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
     )

@@ -22,6 +22,7 @@ def _make_resolver(
     events: QueryEventBuffer | None = None,
     trusted_networks: list[str] | None = None,
     stats: ClientStatsBuffer | None = None,
+    buffer: QueryBuffer | None = None,
 ) -> DnsResolver:
     effective = settings or RuntimeSettings()
     state = RuntimeState(
@@ -32,7 +33,7 @@ def _make_resolver(
         load_blocklist_excluded=lambda: blocklist_excluded or frozenset(),
         load_trusted_networks=lambda: trusted_networks or [],
     )
-    buffer = QueryBuffer(flush=lambda rows: None, flush_seconds=5)
+    buffer = buffer or QueryBuffer(flush=lambda rows: None, flush_seconds=5)
     stats_buffer = stats or ClientStatsBuffer(flush=lambda rows: None, flush_seconds=3600)
     requests = ClientRequestBuffer(flush=lambda rows: None, flush_seconds=3600)
     rtt_buffer = rtt or UpstreamRttBuffer(flush=lambda rows: None, flush_seconds=3600)
@@ -98,6 +99,20 @@ def test_handle_records_query_event() -> None:
     assert captured[0].qtype == "A"
     assert captured[0].rcode == "NOERROR"
     assert captured[0].response == "0.0.0.0"
+
+
+def test_handle_records_query_response_in_log() -> None:
+    captured: list[QueryAgg] = []
+    buffer = QueryBuffer(flush=captured.extend, flush_seconds=5)
+    resolver = _make_resolver(
+        [PolicyRule("*", "ads.example", "override", "0.0.0.0", 60)], buffer=buffer
+    )
+    resolver.handle(DNSRecord.question("ads.example", "A"), "10.0.0.1")
+    buffer.flush()
+    assert len(captured) == 1
+    assert captured[0].domain == "ads.example"
+    assert captured[0].last_action == "override"
+    assert captured[0].last_response == "0.0.0.0"
 
 
 def test_deny_returns_nxdomain() -> None:
@@ -269,10 +284,11 @@ def test_untruncated_udp_response_is_not_retried() -> None:
 def test_query_buffer_aggregates_counts() -> None:
     captured: list[QueryAgg] = []
     buffer = QueryBuffer(flush=captured.extend, flush_seconds=5)
-    buffer.add("1.2.3.4", "example.com", "A", "deny")
-    buffer.add("1.2.3.4", "example.com", "A", "deny")
-    buffer.add("1.2.3.4", "other.com", "AAAA", "forward")
+    buffer.add("1.2.3.4", "example.com", "A", "deny", "")
+    buffer.add("1.2.3.4", "example.com", "A", "deny", "")
+    buffer.add("1.2.3.4", "other.com", "AAAA", "forward", "2606:4700:4700::1111")
     buffer.flush()
     by_key = {(row.client, row.domain, row.qtype): row for row in captured}
     assert by_key[("1.2.3.4", "example.com", "A")].count == 2
     assert by_key[("1.2.3.4", "other.com", "AAAA")].count == 1
+    assert by_key[("1.2.3.4", "other.com", "AAAA")].last_response == "2606:4700:4700::1111"

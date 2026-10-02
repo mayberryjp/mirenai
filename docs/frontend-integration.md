@@ -353,6 +353,7 @@ Per-client DNS query statistics, aggregated by `(client, domain, qtype)`.
 | `qtype`       | string            | DNS record type, e.g. `A`, `AAAA`, `MX`       |
 | `count`       | int               | number of times seen                          |
 | `last_action` | string \| null    | last action applied (`forward`/`override`/`deny`/`blocklist`) or `null` |
+| `last_response` | string \| null  | the answer returned on the most recent lookup — comma-joined rdata, e.g. `201.23.89.2` (empty string for an empty answer, e.g. `NXDOMAIN`/`NODATA`); `null` for rows recorded before this field existed |
 | `first_seen`  | string (datetime) |                                               |
 | `last_seen`   | string (datetime) |                                               |
 

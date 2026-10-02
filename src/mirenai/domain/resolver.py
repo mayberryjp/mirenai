@@ -112,11 +112,12 @@ class DnsResolver:
         else:
             reply, result = self._forward_or_cache(request, settings)
 
-        self._buffer.add(client_ip, qname, qtype_name, result)
+        answer = _answer_summary(reply)
+        self._buffer.add(client_ip, qname, qtype_name, result, answer)
         self._stats.add(client_ip, result)
         self._requests.add(client_ip, qname, qtype_name)
         self._events.add(
-            client_ip, qname, qtype_name, _rcode_name(reply.header.rcode), _answer_summary(reply)
+            client_ip, qname, qtype_name, _rcode_name(reply.header.rcode), answer
         )
         if settings.log_queries:
             log.info(

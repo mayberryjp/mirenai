@@ -155,6 +155,7 @@ def init_db() -> None:
     _ensure_hosts_flag_new_domains_column()
     _ensure_blocklist_format_column()
     _ensure_client_hourly_stats_foreign_column()
+    _ensure_query_log_response_column()
 
     from mirenai.repository.blocklists import ensure_default_blocklist
     from mirenai.repository.upstreams import ensure_default_upstream
@@ -247,3 +248,16 @@ def _ensure_client_hourly_stats_foreign_column() -> None:
             conn.execute(
                 text('ALTER TABLE client_hourly_stats ADD COLUMN "foreign" BIGINT NOT NULL DEFAULT 0')
             )
+
+
+def _ensure_query_log_response_column() -> None:
+    """Add ``query_log.last_response`` to a config database created before it.
+
+    ``create_all`` never alters existing tables and this project has no migration
+    tool, so a pre-existing ``query_log`` table needs a one-off ``ALTER TABLE``.
+    Idempotent and a no-op on fresh databases (where ``create_all`` already added it).
+    """
+    with get_engine().begin() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(query_log)"))}
+        if columns and "last_response" not in columns:
+            conn.execute(text("ALTER TABLE query_log ADD COLUMN last_response TEXT"))

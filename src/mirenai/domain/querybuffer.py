@@ -24,12 +24,14 @@ class QueryAgg:
     qtype: str
     count: int
     last_action: str
+    last_response: str
 
 
 @dataclass
 class _Counter:
     count: int
     last_action: str
+    last_response: str
 
 
 FlushCallback = Callable[[list[QueryAgg]], None]
@@ -43,15 +45,16 @@ class QueryBuffer:
         self._data: dict[tuple[str, str, str], _Counter] = {}
         self._stop = threading.Event()
 
-    def add(self, client: str, domain: str, qtype: str, action: str) -> None:
+    def add(self, client: str, domain: str, qtype: str, action: str, response: str) -> None:
         key = (client, domain, qtype)
         with self._lock:
             counter = self._data.get(key)
             if counter is None:
-                self._data[key] = _Counter(count=1, last_action=action)
+                self._data[key] = _Counter(count=1, last_action=action, last_response=response)
             else:
                 counter.count += 1
                 counter.last_action = action
+                counter.last_response = response
 
     def flush(self) -> None:
         with self._lock:
@@ -65,6 +68,7 @@ class QueryBuffer:
                 domain=key[1],
                 qtype=key[2],
                 count=counter.count,
+                last_response=counter.last_response,
                 last_action=counter.last_action,
             )
             for key, counter in snapshot.items()

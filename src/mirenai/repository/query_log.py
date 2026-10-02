@@ -29,6 +29,7 @@ def _to_dict(row: QueryLog) -> dict[str, Any]:
         "qtype": row.qtype,
         "count": row.count,
         "last_action": row.last_action,
+        "last_response": row.last_response,
         "first_seen": row.first_seen.isoformat(),
         "last_seen": row.last_seen.isoformat(),
     }
@@ -45,12 +46,14 @@ def record_queries(rows: list[QueryAgg]) -> None:
                 qtype=row.qtype,
                 count=row.count,
                 last_action=row.last_action,
+                last_response=row.last_response,
             )
             stmt = stmt.on_conflict_do_update(
                 index_elements=["client", "domain", "qtype"],
                 set_={
                     "count": QueryLog.count + stmt.excluded.count,
                     "last_action": stmt.excluded.last_action,
+                    "last_response": stmt.excluded.last_response,
                     "last_seen": func.datetime("now", "localtime"),
                 },
             )

@@ -5,6 +5,7 @@ import pytest
 
 from mirenai import config, db
 from mirenai.db import Base, session_scope
+from mirenai.domain.querybuffer import QueryAgg
 from mirenai.repository import query_log as repo
 from mirenai.repository.models import QueryLog
 
@@ -70,3 +71,19 @@ def test_no_search_returns_all(temp_config_db: None) -> None:
     _add_query("10.0.0.2", "b.example")
     assert repo.count_queries() == 2
     assert len(repo.list_queries()) == 2
+
+
+def test_record_queries_stores_last_response(temp_config_db: None) -> None:
+    repo.record_queries(
+        [QueryAgg("10.0.0.1", "aria.microsoft.com", "A", 1, "forward", "201.23.89.2")]
+    )
+    rows = repo.list_queries(search="aria")
+    assert rows[0]["last_response"] == "201.23.89.2"
+
+
+def test_record_queries_refreshes_last_response_on_conflict(temp_config_db: None) -> None:
+    repo.record_queries([QueryAgg("10.0.0.1", "aria.microsoft.com", "A", 1, "forward", "1.1.1.1")])
+    repo.record_queries([QueryAgg("10.0.0.1", "aria.microsoft.com", "A", 1, "forward", "201.23.89.2")])
+    rows = repo.list_queries(search="aria")
+    assert rows[0]["count"] == 2
+    assert rows[0]["last_response"] == "201.23.89.2"
