@@ -160,6 +160,30 @@ class RuntimeStat(Base):
     )
 
 
+class DnsCacheEntry(Base):
+    """A point-in-time snapshot row of one in-memory DNS cache entry.
+
+    The DNS worker periodically mirrors its answer cache into this table because
+    the API runs in a separate process and can't read the cache directly. One row
+    per cached ``(domain, qtype, qclass)`` answer; the whole table is replaced on
+    each snapshot, so rows are at most one snapshot interval stale.
+    """
+
+    __tablename__ = "dns_cache_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    qtype: Mapped[str] = mapped_column(String(16), nullable=False)
+    qclass: Mapped[str] = mapped_column(String(16), nullable=False)
+    response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    answers: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ttl: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+
+
 class UpstreamHourlyRtt(Base):
     """Per-upstream forward round-trip time for one wall-clock hour.
 
@@ -251,6 +275,28 @@ class ClientNewDomainStat(Base):
     hour_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     client: Mapped[str] = mapped_column(String(64), nullable=False)
     new_domains: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+
+class ForeignClient(Base):
+    """A source IP whose queries were dropped for being outside the trusted subnets.
+
+    One row per untrusted source IP: ``hits`` accumulates across dropped queries,
+    ``first_seen`` is set once on insert, and ``last_seen`` is refreshed on every
+    flush. The repository caps the table to the most recently seen IPs so a flood
+    of spoofed sources can't grow it without bound.
+    """
+
+    __tablename__ = "foreign_clients"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ip: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    hits: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW, index=True
+    )
 
 
 class Blocklist(Base):

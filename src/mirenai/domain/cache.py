@@ -60,6 +60,22 @@ class TTLCache(Generic[T]):
         with self._lock:
             self._data.clear()
 
+    def snapshot(self) -> list[tuple[str, T, int, int]]:
+        """Return ``(key, value, remaining_ttl, ttl)`` for each live entry.
+
+        Remaining TTL is whole seconds from the monotonic clock at call time;
+        expired entries are skipped. Read-only — does not evict or reorder.
+        """
+        now = time.monotonic()
+        result: list[tuple[str, T, int, int]] = []
+        with self._lock:
+            for key, entry in self._data.items():
+                remaining = entry.expires_at - now
+                if remaining <= 0:
+                    continue
+                result.append((key, entry.value, int(remaining), entry.ttl))
+        return result
+
     def __len__(self) -> int:
         with self._lock:
             return len(self._data)

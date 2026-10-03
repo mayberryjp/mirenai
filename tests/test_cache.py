@@ -38,3 +38,16 @@ def test_len_and_clear() -> None:
 def test_capacity_reports_max_entries() -> None:
     assert TTLCache(42).capacity == 42
     assert TTLCache(0).capacity == 1  # clamped to a minimum of 1
+
+
+def test_snapshot_returns_live_entries_only() -> None:
+    cache: TTLCache[str] = TTLCache(10)
+    cache.set("a", "x", 100)
+    cache.set("b", "y", 0)  # expires immediately
+    snap = {key: (value, remaining, ttl) for key, value, remaining, ttl in cache.snapshot()}
+    assert "b" not in snap
+    value, remaining, ttl = snap["a"]
+    assert value == "x"
+    assert ttl == 100
+    assert 0 < remaining <= 100
+

@@ -18,6 +18,7 @@ from mirenai.domain.blocklist import is_blocked
 from mirenai.domain.cache import TTLCache
 from mirenai.domain.clientrequests import ClientRequestBuffer
 from mirenai.domain.clientstats import ClientStatsBuffer
+from mirenai.domain.foreignclients import ForeignClientBuffer
 from mirenai.domain.policy import (
     ACTION_DENY,
     ACTION_OVERRIDE,
@@ -67,6 +68,7 @@ class DnsResolver:
         requests: ClientRequestBuffer,
         rtt: UpstreamRttBuffer,
         events: QueryEventBuffer,
+        foreign: ForeignClientBuffer,
     ) -> None:
         self._state = state
         self._cache = cache
@@ -75,6 +77,7 @@ class DnsResolver:
         self._requests = requests
         self._rtt = rtt
         self._events = events
+        self._foreign = foreign
 
     def is_trusted(self, client_ip: str) -> bool:
         """Whether a query from ``client_ip`` should be answered at all."""
@@ -83,6 +86,7 @@ class DnsResolver:
     def record_foreign(self, client_ip: str) -> None:
         """Count a query dropped for coming from an untrusted source network."""
         self._stats.add_foreign()
+        self._foreign.add(client_ip)
         if self._state.settings.log_queries:
             log.info("dropped query from untrusted network %s", client_ip)
 

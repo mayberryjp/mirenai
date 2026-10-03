@@ -525,7 +525,7 @@ is **read-only** — there are no create/update/delete endpoints.
 
 "Approved" = `forwarded + cached + overridden`; "denied" = `denied + blocked`. `total` may exceed the sum of the columns if a future result type isn't itemized, so treat the columns as a breakdown of (not necessarily equal to) `total`.
 
-`foreign` counts queries dropped because the source IP was outside the configured trusted subnets (see §7.13). These are tallied under a synthetic `client` of `"foreign"`, so for a real client `foreign` is always `0` — read the meaningful value from `GET /stats/site`, or query `GET /stats?client=foreign`.
+`foreign` counts queries dropped because the source IP was outside the configured trusted subnets (see §7.13). These are tallied under a synthetic `client` of `"foreign"`, so for a real client `foreign` is always `0` — read the meaningful value from `GET /stats/site`, or query `GET /stats?client=foreign`. For the **individual** offending source IPs (per-IP hit counts, not just the aggregate), see §7.14 (`GET /foreign-clients`).
 
 Ordering: by `hour_start` descending, then `client`.
 
@@ -801,7 +801,8 @@ Source-subnet allowlist. When **any** trusted network is configured the DNS
 server answers only clients whose source IP falls inside one of the subnets and
 **silently drops** every other query — no reply, over both UDP and TCP, and the
 client is not recorded as a host. Those drops are counted as the `foreign` series
-in §7.8 (`GET /stats` / `GET /stats/site`). With **no** rows configured the
+in §7.8 (`GET /stats` / `GET /stats/site`), and the individual source IPs are
+recorded per-IP in §7.14 (`GET /foreign-clients`). With **no** rows configured the
 resolver answers every client, so the feature is opt-in. Changes are picked up by
 the DNS worker within `refresh_seconds`.
 
@@ -834,6 +835,40 @@ are normalized away (`10.2.10.5/24` → `10.2.10.0/24`) and a bare address becom
 
 #### `DELETE /trusted-networks/{id}`
 → `200 { "status": "ok", "deleted": <id> }` or `404`.
+
+---
+
+### 7.14 Foreign clients
+
+The individual **source IPs** whose queries were dropped for falling outside the
+trusted subnets (§7.13). While the `foreign` stat series (§7.8) only gives an
+aggregate count, this resource records **which** IPs are probing the resolver,
+with a per-IP hit counter and first/last-seen timestamps. Written by the DNS
+worker from an in-memory buffer on the `query_flush_seconds` tick. This resource
+is **read-only** — there are no create/update/delete endpoints.
+
+To keep cardinality bounded against spoofed-source floods, two caps apply: the
+worker buffers at most a fixed number of distinct IPs between flushes (additional
+new IPs in a flush window are counted only in the aggregate `foreign` stat, not
+here), and the table itself is trimmed to the **1000** most recently seen IPs on
+every write.
+
+**Foreign-client object:**
+| field        | type              | notes                                              |
+| ------------ | ----------------- | -------------------------------------------------- |
+| `id`         | int               |                                                    |
+| `ip`         | string            | untrusted source IP                                |
+| `hits`       | int               | dropped queries counted from this IP               |
+| `first_seen` | string (datetime) | when this IP was first dropped                     |
+| `last_seen`  | string (datetime) | most recent drop from this IP                      |
+
+Ordering: by `last_seen` descending (most recent offenders first), then `id`.
+
+#### `GET /foreign-clients`
+List, paginated. → `{ "status": "ok", "foreign_clients": [...], "total": N }`
+
+Optional `limit`/`offset` (omit both to return every retained row). With no
+trusted networks configured nothing is ever dropped, so this list stays empty.
 
 ---
 

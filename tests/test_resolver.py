@@ -4,6 +4,7 @@ from dnslib import QTYPE, RCODE, RR, A, DNSRecord
 from mirenai.domain.cache import TTLCache
 from mirenai.domain.clientrequests import ClientRequestBuffer
 from mirenai.domain.clientstats import ClientStatAgg, ClientStatsBuffer
+from mirenai.domain.foreignclients import ForeignClientAgg, ForeignClientBuffer
 from mirenai.domain.policy import PolicyRule
 from mirenai.domain.querybuffer import QueryAgg, QueryBuffer
 from mirenai.domain.queryevents import QueryEvent, QueryEventBuffer
@@ -23,6 +24,7 @@ def _make_resolver(
     trusted_networks: list[str] | None = None,
     stats: ClientStatsBuffer | None = None,
     buffer: QueryBuffer | None = None,
+    foreign: ForeignClientBuffer | None = None,
 ) -> DnsResolver:
     effective = settings or RuntimeSettings()
     state = RuntimeState(
@@ -38,8 +40,11 @@ def _make_resolver(
     requests = ClientRequestBuffer(flush=lambda rows: None, flush_seconds=3600)
     rtt_buffer = rtt or UpstreamRttBuffer(flush=lambda rows: None, flush_seconds=3600)
     events_buffer = events or QueryEventBuffer(flush=lambda rows: None, flush_seconds=3600)
+    foreign_buffer = foreign or ForeignClientBuffer(flush=lambda rows: None, flush_seconds=3600)
     cache: TTLCache[bytes] = TTLCache(100)
-    return DnsResolver(state, cache, buffer, stats_buffer, requests, rtt_buffer, events_buffer)
+    return DnsResolver(
+        state, cache, buffer, stats_buffer, requests, rtt_buffer, events_buffer, foreign_buffer
+    )
 
 
 def test_is_trusted_honors_configured_subnets() -> None:
@@ -65,6 +70,20 @@ def test_record_foreign_increments_foreign_stat() -> None:
     assert captured[0].client == "foreign"
     assert captured[0].foreign == 1
     assert captured[0].total == 1
+
+
+def test_record_foreign_records_source_ip() -> None:
+    captured: list[ForeignClientAgg] = []
+    foreign = ForeignClientBuffer(flush=captured.extend, flush_seconds=3600)
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")], trusted_networks=["10.2.10.0/24"], foreign=foreign
+    )
+    resolver.record_foreign("192.168.1.50")
+    resolver.record_foreign("192.168.1.50")
+    foreign.flush()
+    assert len(captured) == 1
+    assert captured[0].ip == "192.168.1.50"
+    assert captured[0].hits == 2
 
 
 def test_forward_records_upstream_rtt(monkeypatch: pytest.MonkeyPatch) -> None:

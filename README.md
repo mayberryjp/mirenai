@@ -169,6 +169,7 @@ per-endpoint shapes.
 | Cache        | `POST /cache/flush`                                                                                   |
 | Settings     | `GET/PUT /settings`                                                                                   |
 | Trusted networks | `GET/POST /trusted-networks`, `GET/DELETE /trusted-networks/{id}` — source-subnet allowlist      |
+| Foreign clients | `GET /foreign-clients` — source IPs dropped by the trusted-network screen (per-IP hit counts) |
 
 List endpoints take optional `limit`/`offset`.
 
@@ -211,7 +212,9 @@ A few specifics worth knowing:
   client. Add one or more source subnets (e.g. `10.2.10.0/24`, multiple allowed)
   and any query from outside them is dropped before parsing — no reply on UDP or
   TCP, and no host record — and counted under the `foreign` series in `GET /stats`
-  and `GET /stats/site`. The list is reloaded on the `refresh_seconds` timer.
+  and `GET /stats/site`. The offending source IPs are also recorded per-IP (with
+  hit counts, capped to the most recent 1000) and listed by `GET /foreign-clients`.
+  The list is reloaded on the `refresh_seconds` timer.
 - **Overrides** return `A`/`AAAA` records built from the IP(s) in
   `override_response` — the common sinkhole case.
 - **Timestamps** are stored and returned in the container's local time zone via

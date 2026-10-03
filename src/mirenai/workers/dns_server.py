@@ -17,8 +17,10 @@ from dnslib.server import BaseResolver, DNSHandler, DNSServer
 
 from mirenai.config import settings
 from mirenai.domain.cache import TTLCache
+from mirenai.domain.cacheview import build_cache_snapshot
 from mirenai.domain.clientrequests import ClientRequestBuffer
 from mirenai.domain.clientstats import ClientStatsBuffer
+from mirenai.domain.foreignclients import ForeignClientBuffer
 from mirenai.domain.hosts import HostTracker
 from mirenai.domain.querybuffer import QueryBuffer
 from mirenai.domain.queryevents import QueryEventBuffer
@@ -29,8 +31,10 @@ from mirenai.integrations.sando import sync_host_from_sando
 from mirenai.logging import configure_logging, get_logger
 from mirenai.repository.blocklists import load_blocklist_domains
 from mirenai.repository.cache_control import get_cache_flush_request
+from mirenai.repository.cache_entries import record_cache_entries
 from mirenai.repository.client_requests import materialize_new_domains, record_client_requests
 from mirenai.repository.client_stats import record_client_stats
+from mirenai.repository.foreign_clients import record_foreign_clients
 from mirenai.repository.hosts import load_blocklist_excluded, load_known_hosts, record_hosts
 from mirenai.repository.policies import ensure_client_policy, load_rules
 from mirenai.repository.query_events import record_query_events
@@ -47,6 +51,7 @@ _DB_RETRY_SECONDS = 3
 _STATS_FLUSH_SECONDS = 3600
 _REQUESTS_FLUSH_SECONDS = 3600
 _NEW_DOMAIN_MATERIALIZE_SECONDS = 3600
+_CACHE_SNAPSHOT_SECONDS = 30
 
 
 def _run_new_domain_materializer(stop: threading.Event) -> None:
@@ -80,6 +85,17 @@ def _run_runtime_stats(
             record_runtime_stats(_runtime_snapshot(cache, state))
         except Exception:
             log.exception("runtime stats flush failed")
+        if stop.wait(interval):
+            return
+
+
+def _run_cache_snapshot(cache: TTLCache[bytes], interval: int, stop: threading.Event) -> None:
+    """Mirror the in-memory cache to the DB immediately, then every ``interval`` seconds."""
+    while True:
+        try:
+            record_cache_entries(build_cache_snapshot(cache))
+        except Exception:
+            log.exception("cache snapshot flush failed")
         if stop.wait(interval):
             return
 
@@ -196,6 +212,9 @@ def main() -> None:
     events = QueryEventBuffer(
         flush=record_query_events, flush_seconds=runtime.query_flush_seconds
     )
+    foreign = ForeignClientBuffer(
+        flush=record_foreign_clients, flush_seconds=runtime.query_flush_seconds
+    )
     hosts = HostTracker(
         flush=record_hosts,
         load=load_known_hosts,
@@ -203,7 +222,7 @@ def main() -> None:
         refresh_seconds=runtime.refresh_seconds,
         on_discover=_make_on_discover(state),
     )
-    core = DnsResolver(state, cache, buffer, stats, requests, rtt, events)
+    core = DnsResolver(state, cache, buffer, stats, requests, rtt, events, foreign)
     resolver = ScreeningResolver(core, hosts)
 
     udp_server = DNSServer(
@@ -227,6 +246,7 @@ def main() -> None:
     requests.start()
     rtt.start()
     events.start()
+    foreign.start()
     hosts.start()
     materialize_stop = threading.Event()
     threading.Thread(
@@ -247,6 +267,13 @@ def main() -> None:
         target=_run_cache_flusher,
         args=(cache, runtime.refresh_seconds, cache_flush_stop),
         name="cache-flusher",
+        daemon=True,
+    ).start()
+    cache_snapshot_stop = threading.Event()
+    threading.Thread(
+        target=_run_cache_snapshot,
+        args=(cache, _CACHE_SNAPSHOT_SECONDS, cache_snapshot_stop),
+        name="cache-snapshot",
         daemon=True,
     ).start()
     udp_server.start_thread()
@@ -272,10 +299,12 @@ def main() -> None:
         requests.stop()
         rtt.stop()
         events.stop()
+        foreign.stop()
         hosts.stop()
         materialize_stop.set()
         runtime_stats_stop.set()
         cache_flush_stop.set()
+        cache_snapshot_stop.set()
 
 
 if __name__ == "__main__":

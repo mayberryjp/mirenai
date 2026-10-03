@@ -7,6 +7,7 @@ from bottle import Bottle, request, response
 from mirenai.api.routes.blocklists import register_blocklist_routes
 from mirenai.api.routes.cache import register_cache_routes
 from mirenai.api.routes.client_modes import register_client_mode_routes
+from mirenai.api.routes.foreign_clients import register_foreign_client_routes
 from mirenai.api.routes.health import register_health_routes
 from mirenai.api.routes.hosts import register_host_routes
 from mirenai.api.routes.policies import register_policy_routes
@@ -42,6 +43,7 @@ def create_app() -> Bottle:
     register_request_routes(app)
     register_cache_routes(app)
     register_trusted_network_routes(app)
+    register_foreign_client_routes(app)
 
     @app.hook("before_request")
     def start_timer() -> None:
