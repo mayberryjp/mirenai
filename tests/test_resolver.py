@@ -2,6 +2,7 @@ import pytest
 from dnslib import QTYPE, RCODE, RR, A, DNSRecord
 
 from mirenai.domain.cache import TTLCache
+from mirenai.domain.cacheoutcome import CacheOutcomeAgg, CacheOutcomeBuffer
 from mirenai.domain.clientrequests import ClientRequestBuffer
 from mirenai.domain.clientstats import ClientStatAgg, ClientStatsBuffer
 from mirenai.domain.foreignclients import ForeignClientAgg, ForeignClientBuffer
@@ -10,6 +11,7 @@ from mirenai.domain.querybuffer import QueryAgg, QueryBuffer
 from mirenai.domain.queryevents import QueryEvent, QueryEventBuffer
 from mirenai.domain.resolver import DnsResolver
 from mirenai.domain.state import RuntimeSettings, RuntimeState, UpstreamServer
+from mirenai.domain.uncacheable import UncacheableAgg, UncacheableBuffer
 from mirenai.domain.upstreamstats import UpstreamRttAgg, UpstreamRttBuffer
 
 
@@ -25,6 +27,8 @@ def _make_resolver(
     stats: ClientStatsBuffer | None = None,
     buffer: QueryBuffer | None = None,
     foreign: ForeignClientBuffer | None = None,
+    uncached: UncacheableBuffer | None = None,
+    outcomes: CacheOutcomeBuffer | None = None,
 ) -> DnsResolver:
     effective = settings or RuntimeSettings()
     state = RuntimeState(
@@ -41,9 +45,20 @@ def _make_resolver(
     rtt_buffer = rtt or UpstreamRttBuffer(flush=lambda rows: None, flush_seconds=3600)
     events_buffer = events or QueryEventBuffer(flush=lambda rows: None, flush_seconds=3600)
     foreign_buffer = foreign or ForeignClientBuffer(flush=lambda rows: None, flush_seconds=3600)
+    uncached_buffer = uncached or UncacheableBuffer(flush=lambda rows: None, flush_seconds=3600)
+    outcomes_buffer = outcomes or CacheOutcomeBuffer(flush=lambda rows: None, flush_seconds=3600)
     cache: TTLCache[bytes] = TTLCache(100)
     return DnsResolver(
-        state, cache, buffer, stats_buffer, requests, rtt_buffer, events_buffer, foreign_buffer
+        state,
+        cache,
+        buffer,
+        stats_buffer,
+        requests,
+        rtt_buffer,
+        events_buffer,
+        foreign_buffer,
+        uncached_buffer,
+        outcomes_buffer,
     )
 
 
@@ -102,6 +117,118 @@ def test_forward_records_upstream_rtt(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(captured) == 1
     assert captured[0].address == "1.1.1.1"
     assert captured[0].samples == 1
+
+
+def _forwarding_resolver(uncached: UncacheableBuffer) -> DnsResolver:
+    return _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        upstreams=[UpstreamServer("1.1.1.1", 53, "udp", 100)],
+        uncached=uncached,
+    )
+
+
+def test_uncacheable_records_nxdomain(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[UncacheableAgg] = []
+    uncached = UncacheableBuffer(flush=captured.extend, flush_seconds=3600)
+    reply = DNSRecord.question("nope.example", "A").reply()
+    reply.header.rcode = RCODE.NXDOMAIN
+    reply_bytes = reply.pack()
+    monkeypatch.setattr(DNSRecord, "send", lambda self, *a, **k: reply_bytes)
+    _forwarding_resolver(uncached).handle(DNSRecord.question("nope.example", "A"), "10.0.0.1")
+    uncached.flush()
+    assert len(captured) == 1
+    assert captured[0].domain == "nope.example"
+    assert captured[0].reason == "nxdomain"
+    assert captured[0].last_ttl is None
+    assert captured[0].hits == 1
+
+
+def test_uncacheable_records_nodata(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[UncacheableAgg] = []
+    uncached = UncacheableBuffer(flush=captured.extend, flush_seconds=3600)
+    reply_bytes = DNSRecord.question("empty.example", "A").reply().pack()  # NOERROR, no answers
+    monkeypatch.setattr(DNSRecord, "send", lambda self, *a, **k: reply_bytes)
+    _forwarding_resolver(uncached).handle(DNSRecord.question("empty.example", "A"), "10.0.0.1")
+    uncached.flush()
+    assert len(captured) == 1
+    assert captured[0].reason == "nodata"
+    assert captured[0].last_ttl is None
+
+
+def test_uncacheable_records_zero_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[UncacheableAgg] = []
+    uncached = UncacheableBuffer(flush=captured.extend, flush_seconds=3600)
+    reply = DNSRecord.question("fast.example", "A").reply()
+    reply.add_answer(RR("fast.example", QTYPE.A, ttl=0, rdata=A("1.2.3.4")))
+    reply_bytes = reply.pack()
+    monkeypatch.setattr(DNSRecord, "send", lambda self, *a, **k: reply_bytes)
+    # cache_min_ttl defaults to 0, so a TTL-0 answer clamps to 0 and isn't cached.
+    _forwarding_resolver(uncached).handle(DNSRecord.question("fast.example", "A"), "10.0.0.1")
+    uncached.flush()
+    assert len(captured) == 1
+    assert captured[0].reason == "zero-ttl"
+    assert captured[0].last_ttl == 0
+
+
+def test_uncacheable_records_upstream_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[UncacheableAgg] = []
+    uncached = UncacheableBuffer(flush=captured.extend, flush_seconds=3600)
+
+    def _boom(self: DNSRecord, *a: object, **k: object) -> bytes:
+        raise OSError("unreachable")
+
+    monkeypatch.setattr(DNSRecord, "send", _boom)
+    _forwarding_resolver(uncached).handle(DNSRecord.question("down.example", "A"), "10.0.0.1")
+    uncached.flush()
+    assert len(captured) == 1
+    assert captured[0].reason == "upstream-failure"
+
+
+def test_cacheable_answer_is_not_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[UncacheableAgg] = []
+    uncached = UncacheableBuffer(flush=captured.extend, flush_seconds=3600)
+    reply = DNSRecord.question("ok.example", "A").reply()
+    reply.add_answer(RR("ok.example", QTYPE.A, ttl=300, rdata=A("1.2.3.4")))
+    reply_bytes = reply.pack()
+    monkeypatch.setattr(DNSRecord, "send", lambda self, *a, **k: reply_bytes)
+    _forwarding_resolver(uncached).handle(DNSRecord.question("ok.example", "A"), "10.0.0.1")
+    uncached.flush()
+    assert captured == []
+
+
+def test_outcome_records_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[CacheOutcomeAgg] = []
+    outcomes = CacheOutcomeBuffer(flush=captured.extend, flush_seconds=3600)
+    reply = DNSRecord.question("ok.example", "A").reply()
+    reply.add_answer(RR("ok.example", QTYPE.A, ttl=300, rdata=A("1.2.3.4")))
+    reply_bytes = reply.pack()
+    monkeypatch.setattr(DNSRecord, "send", lambda self, *a, **k: reply_bytes)
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        upstreams=[UpstreamServer("1.1.1.1", 53, "udp", 100)],
+        outcomes=outcomes,
+    )
+    resolver.handle(DNSRecord.question("ok.example", "A"), "10.0.0.1")
+    outcomes.flush()
+    assert [row.reason for row in captured] == ["cached"]
+    assert captured[0].hits == 1
+
+
+def test_outcome_records_nxdomain(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[CacheOutcomeAgg] = []
+    outcomes = CacheOutcomeBuffer(flush=captured.extend, flush_seconds=3600)
+    reply = DNSRecord.question("nope.example", "A").reply()
+    reply.header.rcode = RCODE.NXDOMAIN
+    reply_bytes = reply.pack()
+    monkeypatch.setattr(DNSRecord, "send", lambda self, *a, **k: reply_bytes)
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        upstreams=[UpstreamServer("1.1.1.1", 53, "udp", 100)],
+        outcomes=outcomes,
+    )
+    resolver.handle(DNSRecord.question("nope.example", "A"), "10.0.0.1")
+    outcomes.flush()
+    assert [row.reason for row in captured] == ["nxdomain"]
 
 
 def test_handle_records_query_event() -> None:

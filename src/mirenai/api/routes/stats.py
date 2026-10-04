@@ -4,6 +4,7 @@ from bottle import Bottle, request
 
 from mirenai.api.errors import read_int_query, read_pagination
 from mirenai.repository import blocklists as blocklists_repo
+from mirenai.repository import cache_outcome as cache_outcome_repo
 from mirenai.repository import client_requests as requests_repo
 from mirenai.repository import client_stats as repo
 from mirenai.repository import hosts as hosts_repo
@@ -50,6 +51,25 @@ def register_stats_routes(app: Bottle) -> None:
             return {"status": "ok", "stats": rows, "total": len(rows)}
         rows = repo.list_site_hourly_stats(limit=limit, offset=offset)
         total = repo.count_site_hourly_stats()
+        return {"status": "ok", "stats": rows, "total": total}
+
+    @app.get("/stats/cache-outcomes")
+    def cache_outcome_stats() -> dict[str, Any]:
+        paginate, limit, offset, err = read_pagination()
+        if err is not None:
+            return err
+        hours, err = read_int_query("hours")
+        if err is not None:
+            return err
+        if hours is not None:
+            # gap-filled forwarded cache-outcome series for graphs; limit/offset ignored
+            rows = cache_outcome_repo.list_cache_outcomes(hours=hours, fill=True)
+            return {"status": "ok", "stats": rows, "total": len(rows)}
+        if not paginate:
+            rows = cache_outcome_repo.list_cache_outcomes()
+            return {"status": "ok", "stats": rows, "total": len(rows)}
+        rows = cache_outcome_repo.list_cache_outcomes(limit=limit, offset=offset)
+        total = cache_outcome_repo.count_cache_outcomes()
         return {"status": "ok", "stats": rows, "total": total}
 
     @app.get("/stats/new-domains")

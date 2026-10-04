@@ -184,6 +184,59 @@ class DnsCacheEntry(Base):
     )
 
 
+class UncacheableResponse(Base):
+    """A forwarded answer the resolver could not cache, with a reason and hit count.
+
+    One row per ``(domain, qtype, reason)``: the DNS worker aggregates these in
+    memory and writes them in a batch (upsert ``hits += n``, ``last_seen`` and
+    ``last_ttl`` refreshed). It explains *why* an answer wasn't cached — negative
+    (``nxdomain`` / ``error``), ``nodata``, ``zero-ttl``, or ``upstream-failure`` —
+    so a low cache-hit rate can be diagnosed. ``last_ttl`` is the most recent
+    upstream TTL observed (NULL when the response carried no answer records).
+    """
+
+    __tablename__ = "uncacheable_responses"
+    __table_args__ = (
+        UniqueConstraint("domain", "qtype", "reason", name="uq_uncacheable_domain_qtype_reason"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    qtype: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    last_ttl: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    hits: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+
+
+class CacheOutcomeHourly(Base):
+    """Hourly count of forwarded-query cache outcomes, one row per (hour, reason).
+
+    A long-format time series for charting *why* forwarded answers were or weren't
+    cached — ``cached`` (stored) vs ``nxdomain`` / ``error`` / ``nodata`` /
+    ``zero-ttl`` / ``upstream-failure``. Written from an in-memory buffer (upsert on
+    ``hour_start`` + ``reason``); buckets older than the retention window are purged
+    on write. Independent of the per-client ``forwarded`` tally, which is unchanged.
+    """
+
+    __tablename__ = "cache_outcome_hourly"
+    __table_args__ = (
+        UniqueConstraint("hour_start", "reason", name="uq_cache_outcome_hour_reason"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    hour_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    hits: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+
 class UpstreamHourlyRtt(Base):
     """Per-upstream forward round-trip time for one wall-clock hour.
 

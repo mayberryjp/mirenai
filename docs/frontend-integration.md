@@ -82,7 +82,7 @@ All errors use the envelope above. Map on `code` (stable string), not on the hum
 
 ## 5. Pagination
 
-List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/domains`, `/blocklists/search`, `/queries`, `/hosts`, `/stats`, `/stats/site`, `/stats/upstreams`, `/requests`, `/trusted-networks`) accept **optional** `limit` and `offset` query parameters.
+List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/domains`, `/blocklists/search`, `/queries`, `/hosts`, `/stats`, `/stats/site`, `/stats/cache-outcomes`, `/stats/upstreams`, `/requests`, `/trusted-networks`) accept **optional** `limit` and `offset` query parameters.
 
 - **Neither supplied →** all rows are returned; `total` equals the number of rows in the response.
 - **Either supplied →** results are paginated; `total` is the **full count** across all rows (not the length of this page).
@@ -94,7 +94,7 @@ Example: `GET /policies?limit=25&offset=50` → up to 25 policies starting at ro
 
 Ordering is fixed per resource (documented per endpoint below); there is no sort parameter.
 
-A few list endpoints also accept resource-specific **filter** parameters (documented with the endpoint): `/stats` accepts `client` and `hours`; `/stats/site` accepts `hours`; `/requests` accepts `client`. Filters combine with `limit`/`offset`, and `total` reflects the filtered count.
+A few list endpoints also accept resource-specific **filter** parameters (documented with the endpoint): `/stats` accepts `client` and `hours`; `/stats/site` accepts `hours`; `/stats/cache-outcomes` accepts `hours`; `/requests` accepts `client`. Filters combine with `limit`/`offset`, and `total` reflects the filtered count.
 
 ---
 
@@ -563,6 +563,44 @@ Site-wide hourly totals — the same counts **summed across all clients**, one r
 
 Ordering: by `hour_start` descending. Example: `GET /stats/site?hours=168` for the last week of site-wide hourly totals.
 
+#### `GET /stats/cache-outcomes`
+Hourly breakdown of **why forwarded answers were or weren't cached** — the feed for
+a forwarded-reason chart to diagnose a low cache-hit rate. Every query that goes to
+an upstream (a cache miss) falls into exactly one bucket: `cached` (the answer was
+stored) or the reason it wasn't. Cache **hits** are not included (they aren't
+forwarded). This is **additive** — these queries are still counted under
+`forwarded` / `servfail` in `/stats` and `/stats/site`; this endpoint just splits
+the forwards by cache outcome. Long format: one row per `(hour, reason)`. Read-only.
+
+**Row object:**
+| field        | type              | notes                                              |
+| ------------ | ----------------- | -------------------------------------------------- |
+| `hour_start` | string (datetime) | top of the hour, e.g. `"2026-09-28T14:00:00"`      |
+| `reason`     | string            | outcome bucket (see below)                         |
+| `hits`       | int               | forwarded queries with this outcome that hour      |
+
+**Reasons:**
+| reason             | meaning                                                                 |
+| ------------------ | ----------------------------------------------------------------------- |
+| `cached`           | answer was cacheable and stored (good — the next query can be a hit)     |
+| `nxdomain`         | upstream returned `NXDOMAIN`; not cached, so it recurs                   |
+| `error`            | upstream returned another non-`NOERROR` rcode (e.g. `REFUSED`)          |
+| `nodata`           | `NOERROR` with no answer records (e.g. `AAAA` for an IPv4-only name)     |
+| `zero-ttl`         | positive answer whose TTL clamped to 0 (needs `cache_min_ttl = 0`)      |
+| `upstream-failure` | every upstream failed; the resolver returned `SERVFAIL`                 |
+
+Recorded only while `cache_enabled` is true. For the per-domain detail behind these
+buckets (which names, with hit counts), see `GET /cache/uncacheable` (§7.11).
+
+**Graph feed:** pass `hours=<n>` for a dense series — one row per hour for **every**
+reason across the window, empty cells zero-filled (`hits: 0`) so every line has a
+point at every hour. `limit`/`offset` are ignored in this mode, `total` is the
+number of rows, and the window is capped at **100 hours** (the retention limit).
+
+**Plain list:** without `hours`, returns stored rows (optionally `limit`/`offset`),
+newest hour first. → `{ "status": "ok", "stats": [...], "total": N }`. Example:
+`GET /stats/cache-outcomes?hours=48` for two days of forwarded-reason history.
+
 #### `GET /stats/new-domains`
 Counts of **newly-seen domains** per client, bucketed by wall-clock hour, over the
 last **20 one-hour intervals**. A domain is "new" for a client in the hour it was
@@ -754,6 +792,38 @@ polls, within `refresh_seconds` (default 10s). `requested_at` is the local-time
 timestamp recorded for the request. No request body is needed; repeated calls
 just update the pending request. If the DNS server isn't running there's nothing
 to clear — a freshly started server always begins with an empty cache.
+
+#### `GET /cache/uncacheable`
+Forwarded answers the resolver **could not cache**, aggregated by
+`(domain, qtype, reason)` with a hit counter — a diagnostic for a low cache-hit
+rate (which names keep going to the upstream and why). Ordered by `hits`
+descending. Only positive answers with a usable TTL are cached, so everything
+here is a response that recurs instead of being served from cache.
+
+Supports `limit`/`offset` and an optional `?reason=` filter.
+
+**Uncacheable object:**
+| field        | type        | notes                                                        |
+| ------------ | ----------- | ------------------------------------------------------------ |
+| `domain`     | string      | queried name (normalized)                                    |
+| `qtype`      | string      | record type (`A`, `AAAA`, …)                                 |
+| `reason`     | string      | why it wasn't cached (see below)                             |
+| `last_ttl`   | int \| null | most recent upstream TTL seen; `null` when the response had no answer records |
+| `hits`       | int         | times this uncacheable response was seen                     |
+| `first_seen` | string      | local-time ISO timestamp, set once                           |
+| `last_seen`  | string      | local-time ISO timestamp, refreshed on each flush            |
+
+**Reasons:**
+| reason             | meaning                                                                 |
+| ------------------ | ----------------------------------------------------------------------- |
+| `nxdomain`         | upstream returned `NXDOMAIN` (name doesn't exist); never cached         |
+| `error`            | upstream returned another non-`NOERROR` rcode (e.g. `REFUSED`)          |
+| `nodata`           | `NOERROR` but no answer records (e.g. `AAAA` for an IPv4-only name)      |
+| `zero-ttl`         | positive answer whose TTL clamped to 0 (needs `cache_min_ttl = 0`)      |
+| `upstream-failure` | every upstream failed; the resolver returned `SERVFAIL`                 |
+
+Recorded only while `cache_enabled` is true (when caching is off there is no
+hit rate to diagnose). → `{ "status": "ok", "uncacheable": [ … ], "total": 12 }`
 
 ---
 

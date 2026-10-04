@@ -16,6 +16,15 @@ from dnslib import AAAA, QTYPE, RCODE, RR, A, DNSRecord
 
 from mirenai.domain.blocklist import is_blocked
 from mirenai.domain.cache import TTLCache
+from mirenai.domain.cacheoutcome import (
+    OUTCOME_CACHED,
+    OUTCOME_ERROR,
+    OUTCOME_NODATA,
+    OUTCOME_NXDOMAIN,
+    OUTCOME_UPSTREAM_FAILURE,
+    OUTCOME_ZERO_TTL,
+    CacheOutcomeBuffer,
+)
 from mirenai.domain.clientrequests import ClientRequestBuffer
 from mirenai.domain.clientstats import ClientStatsBuffer
 from mirenai.domain.foreignclients import ForeignClientBuffer
@@ -29,6 +38,7 @@ from mirenai.domain.policy import (
 from mirenai.domain.querybuffer import QueryBuffer
 from mirenai.domain.queryevents import QueryEventBuffer
 from mirenai.domain.state import RuntimeSettings, RuntimeState, UpstreamServer
+from mirenai.domain.uncacheable import UncacheableBuffer
 from mirenai.domain.upstreamstats import UpstreamRttBuffer
 from mirenai.logging import get_logger
 
@@ -69,6 +79,8 @@ class DnsResolver:
         rtt: UpstreamRttBuffer,
         events: QueryEventBuffer,
         foreign: ForeignClientBuffer,
+        uncached: UncacheableBuffer,
+        outcomes: CacheOutcomeBuffer,
     ) -> None:
         self._state = state
         self._cache = cache
@@ -78,6 +90,8 @@ class DnsResolver:
         self._rtt = rtt
         self._events = events
         self._foreign = foreign
+        self._uncached = uncached
+        self._outcomes = outcomes
 
     def is_trusted(self, client_ip: str) -> bool:
         """Whether a query from ``client_ip`` should be answered at all."""
@@ -176,6 +190,8 @@ class DnsResolver:
         self, request: DNSRecord, settings: RuntimeSettings
     ) -> tuple[DNSRecord, str]:
         question = request.q
+        name = normalize_domain(str(question.qname))
+        qtype = _qtype_name(question.qtype)
         key = _cache_key(str(question.qname), question.qtype, question.qclass)
 
         if settings.cache_enabled:
@@ -192,14 +208,46 @@ class DnsResolver:
         if reply is None:
             servfail = request.reply()
             servfail.header.rcode = RCODE.SERVFAIL
+            if settings.cache_enabled:
+                self._skip_cache(name, qtype, OUTCOME_UPSTREAM_FAILURE, None)
             return servfail, "servfail"
 
-        # Cache positive answers only; never negative (NXDOMAIN/NODATA) responses.
-        if settings.cache_enabled and reply.header.rcode == RCODE.NOERROR and reply.rr:
-            ttl = self._compute_ttl(reply, settings)
-            if ttl > 0:
-                self._cache.set(key, reply.pack(), ttl)
+        if settings.cache_enabled:
+            self._cache_or_record_skip(key, reply, name, qtype, settings)
         return reply, "forward"
+
+    def _cache_or_record_skip(
+        self, key: str, reply: DNSRecord, name: str, qtype: str, settings: RuntimeSettings
+    ) -> None:
+        """Cache a positive answer, or record why it could not be cached.
+
+        Only called when caching is enabled. Positive answers with a usable TTL are
+        stored (counted as the ``cached`` outcome); every other result is counted by
+        reason in the uncacheable detail table and the hourly cache-outcome series so
+        a low cache-hit rate can be diagnosed.
+        """
+        rcode = reply.header.rcode
+        if rcode == RCODE.NXDOMAIN:
+            self._skip_cache(name, qtype, OUTCOME_NXDOMAIN, None)
+            return
+        if rcode != RCODE.NOERROR:
+            self._skip_cache(name, qtype, OUTCOME_ERROR, None)
+            return
+        if not reply.rr:
+            self._skip_cache(name, qtype, OUTCOME_NODATA, None)
+            return
+        raw_ttl = min(int(record.ttl) for record in reply.rr)
+        ttl = self._compute_ttl(reply, settings)
+        if ttl > 0:
+            self._cache.set(key, reply.pack(), ttl)
+            self._outcomes.add(OUTCOME_CACHED)
+            return
+        self._skip_cache(name, qtype, OUTCOME_ZERO_TTL, raw_ttl)
+
+    def _skip_cache(self, name: str, qtype: str, reason: str, ttl: int | None) -> None:
+        """Record a forwarded answer that wasn't cached, by reason (detail + hourly)."""
+        self._uncached.add(name, qtype, reason, ttl)
+        self._outcomes.add(reason)
 
     def _forward(self, request: DNSRecord, settings: RuntimeSettings) -> DNSRecord | None:
         upstreams = self._state.upstreams

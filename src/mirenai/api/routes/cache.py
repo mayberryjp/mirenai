@@ -5,6 +5,7 @@ from bottle import Bottle, request
 from mirenai.api.errors import read_pagination
 from mirenai.repository import cache_control as repo
 from mirenai.repository import cache_entries as entries_repo
+from mirenai.repository import uncacheable as uncacheable_repo
 
 
 def register_cache_routes(app: Bottle) -> None:
@@ -21,6 +22,19 @@ def register_cache_routes(app: Bottle) -> None:
         rows = entries_repo.list_cache_entries(limit=limit, offset=offset, search=search)
         total = entries_repo.count_cache_entries(search=search)
         return {"status": "ok", "entries": rows, "total": total, "updated_at": updated_at}
+
+    @app.get("/cache/uncacheable")
+    def list_uncacheable() -> dict[str, Any]:
+        paginate, limit, offset, err = read_pagination()
+        if err is not None:
+            return err
+        reason = (request.query.get("reason") or "").strip() or None
+        if not paginate:
+            rows = uncacheable_repo.list_uncacheable(reason=reason)
+            return {"status": "ok", "uncacheable": rows, "total": len(rows)}
+        rows = uncacheable_repo.list_uncacheable(limit=limit, offset=offset, reason=reason)
+        total = uncacheable_repo.count_uncacheable(reason=reason)
+        return {"status": "ok", "uncacheable": rows, "total": total}
 
     @app.post("/cache/flush")
     def flush_cache() -> dict[str, Any]:

@@ -17,6 +17,7 @@ from dnslib.server import BaseResolver, DNSHandler, DNSServer
 
 from mirenai.config import settings
 from mirenai.domain.cache import TTLCache
+from mirenai.domain.cacheoutcome import CacheOutcomeBuffer
 from mirenai.domain.cacheview import build_cache_snapshot
 from mirenai.domain.clientrequests import ClientRequestBuffer
 from mirenai.domain.clientstats import ClientStatsBuffer
@@ -26,12 +27,14 @@ from mirenai.domain.querybuffer import QueryBuffer
 from mirenai.domain.queryevents import QueryEventBuffer
 from mirenai.domain.resolver import DnsResolver
 from mirenai.domain.state import RuntimeState
+from mirenai.domain.uncacheable import UncacheableBuffer
 from mirenai.domain.upstreamstats import UpstreamRttBuffer
 from mirenai.integrations.sando import sync_host_from_sando
 from mirenai.logging import configure_logging, get_logger
 from mirenai.repository.blocklists import load_blocklist_domains
 from mirenai.repository.cache_control import get_cache_flush_request
 from mirenai.repository.cache_entries import record_cache_entries
+from mirenai.repository.cache_outcome import record_cache_outcomes
 from mirenai.repository.client_requests import materialize_new_domains, record_client_requests
 from mirenai.repository.client_stats import record_client_stats
 from mirenai.repository.foreign_clients import record_foreign_clients
@@ -42,6 +45,7 @@ from mirenai.repository.query_log import record_queries
 from mirenai.repository.runtime_stats import record_runtime_stats
 from mirenai.repository.settings import load_runtime_settings
 from mirenai.repository.trusted_networks import load_trusted_networks
+from mirenai.repository.uncacheable import record_uncacheable
 from mirenai.repository.upstream_stats import record_upstream_rtt
 from mirenai.repository.upstreams import load_upstreams
 
@@ -215,6 +219,12 @@ def main() -> None:
     foreign = ForeignClientBuffer(
         flush=record_foreign_clients, flush_seconds=runtime.query_flush_seconds
     )
+    uncached = UncacheableBuffer(
+        flush=record_uncacheable, flush_seconds=runtime.query_flush_seconds
+    )
+    outcomes = CacheOutcomeBuffer(
+        flush=record_cache_outcomes, flush_seconds=runtime.query_flush_seconds
+    )
     hosts = HostTracker(
         flush=record_hosts,
         load=load_known_hosts,
@@ -222,7 +232,9 @@ def main() -> None:
         refresh_seconds=runtime.refresh_seconds,
         on_discover=_make_on_discover(state),
     )
-    core = DnsResolver(state, cache, buffer, stats, requests, rtt, events, foreign)
+    core = DnsResolver(
+        state, cache, buffer, stats, requests, rtt, events, foreign, uncached, outcomes
+    )
     resolver = ScreeningResolver(core, hosts)
 
     udp_server = DNSServer(
@@ -247,6 +259,8 @@ def main() -> None:
     rtt.start()
     events.start()
     foreign.start()
+    uncached.start()
+    outcomes.start()
     hosts.start()
     materialize_stop = threading.Event()
     threading.Thread(
@@ -300,6 +314,8 @@ def main() -> None:
         rtt.stop()
         events.stop()
         foreign.stop()
+        uncached.stop()
+        outcomes.stop()
         hosts.stop()
         materialize_stop.set()
         runtime_stats_stop.set()
