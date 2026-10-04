@@ -1,3 +1,5 @@
+from ipaddress import ip_address
+
 import pytest
 from dnslib import QTYPE, RCODE, RR, A, DNSRecord
 
@@ -6,6 +8,7 @@ from mirenai.domain.cacheoutcome import CacheOutcomeAgg, CacheOutcomeBuffer
 from mirenai.domain.clientrequests import ClientRequestBuffer
 from mirenai.domain.clientstats import ClientStatAgg, ClientStatsBuffer
 from mirenai.domain.foreignclients import ForeignClientAgg, ForeignClientBuffer
+from mirenai.domain.localzones import LocalRecord
 from mirenai.domain.policy import PolicyRule
 from mirenai.domain.querybuffer import QueryAgg, QueryBuffer
 from mirenai.domain.queryevents import QueryEvent, QueryEventBuffer
@@ -24,6 +27,7 @@ def _make_resolver(
     rtt: UpstreamRttBuffer | None = None,
     events: QueryEventBuffer | None = None,
     trusted_networks: list[str] | None = None,
+    local_records: list[LocalRecord] | None = None,
     stats: ClientStatsBuffer | None = None,
     buffer: QueryBuffer | None = None,
     foreign: ForeignClientBuffer | None = None,
@@ -38,6 +42,7 @@ def _make_resolver(
         load_blocklist=lambda: blocklist or frozenset(),
         load_blocklist_excluded=lambda: blocklist_excluded or frozenset(),
         load_trusted_networks=lambda: trusted_networks or [],
+        load_local_records=lambda: local_records or [],
     )
     buffer = buffer or QueryBuffer(flush=lambda rows: None, flush_seconds=5)
     stats_buffer = stats or ClientStatsBuffer(flush=lambda rows: None, flush_seconds=3600)
@@ -137,6 +142,7 @@ def test_uncacheable_records_nxdomain(monkeypatch: pytest.MonkeyPatch) -> None:
     _forwarding_resolver(uncached).handle(DNSRecord.question("nope.example", "A"), "10.0.0.1")
     uncached.flush()
     assert len(captured) == 1
+    assert captured[0].client == "10.0.0.1"
     assert captured[0].domain == "nope.example"
     assert captured[0].reason == "nxdomain"
     assert captured[0].last_ttl is None
@@ -373,6 +379,48 @@ def test_aaaa_forwarded_when_ipv6_enabled() -> None:
         RuntimeSettings(cache_enabled=False),
     )
     reply = resolver.handle(DNSRecord.question("example.com", "AAAA"), "1.2.3.4")
+    assert reply.header.rcode == RCODE.SERVFAIL
+
+
+def test_private_ptr_drop_is_silent_and_unrecorded() -> None:
+    # RFC1918 reverse lookup with no local record -> NODATA, and nothing written to the
+    # query/event buffers so the log and stats stay quiet.
+    captured: list[QueryAgg] = []
+    buffer = QueryBuffer(flush=captured.extend, flush_seconds=5)
+    events: list[QueryEvent] = []
+    events_buffer = QueryEventBuffer(flush=events.extend, flush_seconds=3600)
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")], buffer=buffer, events=events_buffer
+    )
+    ptr_name = ip_address("10.4.10.4").reverse_pointer
+    reply = resolver.handle(DNSRecord.question(ptr_name, "PTR"), "10.0.0.1")
+    buffer.flush()
+    events_buffer.flush()
+    assert reply.header.rcode == RCODE.NOERROR
+    assert len(reply.rr) == 0
+    assert captured == []
+    assert events == []
+
+
+def test_private_ptr_forwarded_when_drop_disabled() -> None:
+    # drop_private_ptr off -> the private reverse lookup forwards (SERVFAIL w/o upstreams).
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        RuntimeSettings(drop_private_ptr=False, cache_enabled=False),
+    )
+    ptr_name = ip_address("10.4.10.4").reverse_pointer
+    reply = resolver.handle(DNSRecord.question(ptr_name, "PTR"), "10.0.0.1")
+    assert reply.header.rcode == RCODE.SERVFAIL
+
+
+def test_public_ptr_not_dropped() -> None:
+    # Only RFC1918 reverse names are dropped; a public-IP PTR still forwards.
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        RuntimeSettings(cache_enabled=False),
+    )
+    ptr_name = ip_address("8.8.8.8").reverse_pointer
+    reply = resolver.handle(DNSRecord.question(ptr_name, "PTR"), "10.0.0.1")
     assert reply.header.rcode == RCODE.SERVFAIL
 
 

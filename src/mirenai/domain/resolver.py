@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import random
 import time
-from ipaddress import IPv4Address, IPv6Address, ip_address
+from ipaddress import IPv4Address, IPv4Network, IPv6Address, ip_address
 from itertools import groupby
 
-from dnslib import AAAA, QTYPE, RCODE, RR, A, DNSRecord
+from dnslib import AAAA, CNAME, PTR, QTYPE, RCODE, RR, A, DNSRecord
 
 from mirenai.domain.blocklist import is_blocked
 from mirenai.domain.cache import TTLCache
@@ -28,6 +28,14 @@ from mirenai.domain.cacheoutcome import (
 from mirenai.domain.clientrequests import ClientRequestBuffer
 from mirenai.domain.clientstats import ClientStatsBuffer
 from mirenai.domain.foreignclients import ForeignClientBuffer
+from mirenai.domain.localzones import (
+    RTYPE_A,
+    RTYPE_AAAA,
+    RTYPE_CNAME,
+    RTYPE_PTR,
+    LocalRecord,
+    LocalRecords,
+)
 from mirenai.domain.policy import (
     ACTION_DENY,
     ACTION_OVERRIDE,
@@ -66,6 +74,36 @@ def _answer_summary(reply: DNSRecord) -> str:
 
 def _cache_key(qname: str, qtype: int, qclass: int) -> str:
     return f"{normalize_domain(qname)}|{qtype}|{qclass}"
+
+
+# Guard against a CNAME loop while chasing a local alias chain to its address.
+_MAX_CNAME_DEPTH = 8
+
+_RFC1918_NETWORKS = (
+    IPv4Network("10.0.0.0/8"),
+    IPv4Network("172.16.0.0/12"),
+    IPv4Network("192.168.0.0/16"),
+)
+_INADDR_ARPA_SUFFIX = ".in-addr.arpa"
+
+
+def _is_rfc1918_ptr(qname: str) -> bool:
+    """Whether ``qname`` is the reverse (PTR) name of an RFC1918 private IPv4 address.
+
+    ``4.10.4.10.in-addr.arpa`` -> ``10.4.10.4`` (private, ``True``). Non-reverse names,
+    partial reverse zones (not a full /32), and public addresses return ``False``.
+    """
+    name = qname.rstrip(".")
+    if not name.endswith(_INADDR_ARPA_SUFFIX):
+        return False
+    labels = name[: -len(_INADDR_ARPA_SUFFIX)].split(".")
+    if len(labels) != 4:
+        return False
+    try:
+        addr = IPv4Address(".".join(reversed(labels)))
+    except ValueError:
+        return False
+    return any(addr in net for net in _RFC1918_NETWORKS)
 
 
 class DnsResolver:
@@ -107,9 +145,19 @@ class DnsResolver:
     def handle(self, request: DNSRecord, client_ip: str) -> DNSRecord:
         question = request.q
         qname = normalize_domain(str(question.qname))
-        qtype_name = _qtype_name(question.qtype)
         settings = self._state.settings
 
+        if (
+            settings.drop_private_ptr
+            and question.qtype == QTYPE.PTR
+            and _is_rfc1918_ptr(qname)
+            and not self._state.local_records.owns(qname)
+        ):
+            # Unmatched RFC1918 reverse lookups: answer NODATA and record nothing so
+            # chatty private-range PTR scans never reach the logs, stats, or buffers.
+            return self._nodata(request)
+
+        qtype_name = _qtype_name(question.qtype)
         rule = select_policy(self._state.policies, client_ip, str(question.qname))
         action = rule.action if rule is not None else settings.default_action
 
@@ -128,7 +176,7 @@ class DnsResolver:
             reply = self._deny(request)
             result = "blocklist"
         else:
-            reply, result = self._forward_or_cache(request, settings)
+            reply, result = self._resolve_local_or_forward(request, settings, client_ip)
 
         answer = _answer_summary(reply)
         self._buffer.add(client_ip, qname, qtype_name, result, answer)
@@ -186,8 +234,84 @@ class DnsResolver:
             )
         return reply
 
+    def _resolve_local_or_forward(
+        self, request: DNSRecord, settings: RuntimeSettings, client: str
+    ) -> tuple[DNSRecord, str]:
+        """Answer from local records if the name is served locally, else forward."""
+        local = self._local(request)
+        if local is not None:
+            return local, "local"
+        return self._forward_or_cache(request, settings, client)
+
+    def _local(self, request: DNSRecord) -> DNSRecord | None:
+        """Build an authoritative answer from local records, or ``None`` if not owned.
+
+        A name present in any local zone is answered here (never forwarded): matching
+        records are returned, or an empty NOERROR (NODATA) when the name exists but
+        carries no record of the requested type, so a local-only name never leaks to
+        an upstream. CNAME aliases are chased to their address within the local set.
+        """
+        question = request.q
+        name = normalize_domain(str(question.qname))
+        records = self._state.local_records
+        if not records.owns(name):
+            return None
+        reply = request.reply()
+        qtype = question.qtype
+        if qtype in (QTYPE.A, QTYPE.AAAA):
+            self._add_address_chain(reply, question.qname, name, qtype, records, 0)
+        elif qtype == QTYPE.CNAME:
+            self._add_records(reply, question.qname, records.get(name, RTYPE_CNAME))
+        elif qtype == QTYPE.PTR:
+            self._add_records(reply, question.qname, records.get(name, RTYPE_PTR))
+        return reply
+
+    def _add_address_chain(
+        self,
+        reply: DNSRecord,
+        owner: object,
+        name: str,
+        qtype: int,
+        records: LocalRecords,
+        depth: int,
+    ) -> None:
+        """Add A/AAAA answers for ``name``, following a local CNAME chain if needed."""
+        rtype = RTYPE_A if qtype == QTYPE.A else RTYPE_AAAA
+        matches = records.get(name, rtype)
+        if matches:
+            for record in matches:
+                rdata = self._build_addr_rdata(qtype, record.value)
+                if rdata is not None:
+                    reply.add_answer(RR(owner, qtype, ttl=record.ttl, rdata=rdata))
+            return
+        if depth >= _MAX_CNAME_DEPTH:
+            return
+        alias = records.cname(name)
+        if alias is None:
+            return
+        reply.add_answer(RR(owner, QTYPE.CNAME, ttl=alias.ttl, rdata=CNAME(alias.value)))
+        if records.owns(alias.value):
+            self._add_address_chain(reply, alias.value, alias.value, qtype, records, depth + 1)
+
+    @staticmethod
+    def _add_records(reply: DNSRecord, owner: object, records: list[LocalRecord]) -> None:
+        """Add plain CNAME/PTR answers for a name."""
+        for record in records:
+            if record.rtype == RTYPE_CNAME:
+                reply.add_answer(RR(owner, QTYPE.CNAME, ttl=record.ttl, rdata=CNAME(record.value)))
+            elif record.rtype == RTYPE_PTR:
+                reply.add_answer(RR(owner, QTYPE.PTR, ttl=record.ttl, rdata=PTR(record.value)))
+
+    @staticmethod
+    def _build_addr_rdata(qtype: int, value: str) -> A | AAAA | None:
+        try:
+            return A(value) if qtype == QTYPE.A else AAAA(value)
+        except Exception:
+            log.warning("invalid local %s record value %r", _qtype_name(qtype), value)
+            return None
+
     def _forward_or_cache(
-        self, request: DNSRecord, settings: RuntimeSettings
+        self, request: DNSRecord, settings: RuntimeSettings, client: str
     ) -> tuple[DNSRecord, str]:
         question = request.q
         name = normalize_domain(str(question.qname))
@@ -209,32 +333,38 @@ class DnsResolver:
             servfail = request.reply()
             servfail.header.rcode = RCODE.SERVFAIL
             if settings.cache_enabled:
-                self._skip_cache(name, qtype, OUTCOME_UPSTREAM_FAILURE, None)
+                self._skip_cache(client, name, qtype, OUTCOME_UPSTREAM_FAILURE, None)
             return servfail, "servfail"
 
         if settings.cache_enabled:
-            self._cache_or_record_skip(key, reply, name, qtype, settings)
+            self._cache_or_record_skip(key, reply, name, qtype, settings, client)
         return reply, "forward"
 
     def _cache_or_record_skip(
-        self, key: str, reply: DNSRecord, name: str, qtype: str, settings: RuntimeSettings
+        self,
+        key: str,
+        reply: DNSRecord,
+        name: str,
+        qtype: str,
+        settings: RuntimeSettings,
+        client: str,
     ) -> None:
         """Cache a positive answer, or record why it could not be cached.
 
         Only called when caching is enabled. Positive answers with a usable TTL are
         stored (counted as the ``cached`` outcome); every other result is counted by
-        reason in the uncacheable detail table and the hourly cache-outcome series so
-        a low cache-hit rate can be diagnosed.
+        reason in the uncacheable detail table (attributed to ``client``) and the
+        hourly cache-outcome series so a low cache-hit rate can be diagnosed.
         """
         rcode = reply.header.rcode
         if rcode == RCODE.NXDOMAIN:
-            self._skip_cache(name, qtype, OUTCOME_NXDOMAIN, None)
+            self._skip_cache(client, name, qtype, OUTCOME_NXDOMAIN, None)
             return
         if rcode != RCODE.NOERROR:
-            self._skip_cache(name, qtype, OUTCOME_ERROR, None)
+            self._skip_cache(client, name, qtype, OUTCOME_ERROR, None)
             return
         if not reply.rr:
-            self._skip_cache(name, qtype, OUTCOME_NODATA, None)
+            self._skip_cache(client, name, qtype, OUTCOME_NODATA, None)
             return
         raw_ttl = min(int(record.ttl) for record in reply.rr)
         ttl = self._compute_ttl(reply, settings)
@@ -242,11 +372,13 @@ class DnsResolver:
             self._cache.set(key, reply.pack(), ttl)
             self._outcomes.add(OUTCOME_CACHED)
             return
-        self._skip_cache(name, qtype, OUTCOME_ZERO_TTL, raw_ttl)
+        self._skip_cache(client, name, qtype, OUTCOME_ZERO_TTL, raw_ttl)
 
-    def _skip_cache(self, name: str, qtype: str, reason: str, ttl: int | None) -> None:
+    def _skip_cache(
+        self, client: str, name: str, qtype: str, reason: str, ttl: int | None
+    ) -> None:
         """Record a forwarded answer that wasn't cached, by reason (detail + hourly)."""
-        self._uncached.add(name, qtype, reason, ttl)
+        self._uncached.add(client, name, qtype, reason, ttl)
         self._outcomes.add(reason)
 
     def _forward(self, request: DNSRecord, settings: RuntimeSettings) -> DNSRecord | None:

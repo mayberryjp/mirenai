@@ -26,6 +26,8 @@ Three long-running processes plus a one-shot init, all under supervisord in one 
 - `mirenai.api_main` — Bottle/Waitress HTTP API.
 - `mirenai.workers.dns_server` — UDP+TCP DNS server; applies policy, caches, records stats.
 - `mirenai.workers.blocklist_downloader` — refreshes blocklists on a schedule.
+- `mirenai.workers.local_zones` — refreshes local DNS zones (Git-hosted `ip,domain` files,
+  served authoritatively from the DNS worker's memory) on a schedule.
 - `initdb` — `mirenai.db.init_db()` runs once at startup.
 
 Keep changes in the right layer:

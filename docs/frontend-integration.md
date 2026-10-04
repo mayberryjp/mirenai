@@ -352,7 +352,7 @@ Per-client DNS query statistics, aggregated by `(client, domain, qtype)`.
 | `blocked`     | bool              | `true` if `domain` or a parent domain is on an enabled blocklist |
 | `qtype`       | string            | DNS record type, e.g. `A`, `AAAA`, `MX`       |
 | `count`       | int               | number of times seen                          |
-| `last_action` | string \| null    | last action applied (`forward`/`override`/`deny`/`blocklist`) or `null` |
+| `last_action` | string \| null    | last action applied (`forward`/`override`/`deny`/`blocklist`/`local`) or `null` |
 | `last_response` | string \| null  | the answer returned on the most recent lookup — comma-joined rdata, e.g. `201.23.89.2` (empty string for an empty answer, e.g. `NXDOMAIN`/`NODATA`); `null` for rows recorded before this field existed |
 | `first_seen`  | string (datetime) |                                               |
 | `last_seen`   | string (datetime) |                                               |
@@ -427,6 +427,7 @@ always present.
 | `query_flush_seconds`| int    | `5`      | how often query stats flush to the database       |
 | `log_queries`        | bool   | `true`   | enable/disable query logging                      |
 | `ipv6_enabled`       | bool   | `true`   | when `false`, every AAAA (IPv6) query is answered `NOERROR`/NODATA so clients fall back to A |
+| `drop_private_ptr`   | bool   | `true`   | when `true`, reverse (`PTR`) lookups for RFC1918 private IPs **not** defined in a local zone are answered `NOERROR`/NODATA and skipped from the query log/stats, so noisy private-range PTR scans don't flood the logs |
 
 #### `GET /settings`
 → `{ "status": "ok", "settings": { /* all keys above */ } }`
@@ -795,16 +796,19 @@ to clear — a freshly started server always begins with an empty cache.
 
 #### `GET /cache/uncacheable`
 Forwarded answers the resolver **could not cache**, aggregated by
-`(domain, qtype, reason)` with a hit counter — a diagnostic for a low cache-hit
-rate (which names keep going to the upstream and why). Ordered by `hits`
-descending. Only positive answers with a usable TTL are cached, so everything
+`(client, domain, qtype, reason)` with a hit counter — a diagnostic for a low
+cache-hit rate (which client keeps asking for which names that go to the upstream,
+and why). Ordered by `hits` descending. Only positive answers with a usable TTL
+are cached, so everything
 here is a response that recurs instead of being served from cache.
 
-Supports `limit`/`offset` and an optional `?reason=` filter.
+Supports `limit`/`offset`, an optional `?reason=` filter, and an optional
+`?client=<ip>` filter (combine them to see one client's misses of one kind).
 
 **Uncacheable object:**
 | field        | type        | notes                                                        |
 | ------------ | ----------- | ------------------------------------------------------------ |
+| `client`     | string      | source IP that requested the uncacheable lookup              |
 | `domain`     | string      | queried name (normalized)                                    |
 | `qtype`      | string      | record type (`A`, `AAAA`, …)                                 |
 | `reason`     | string      | why it wasn't cached (see below)                             |
@@ -942,6 +946,123 @@ trusted networks configured nothing is ever dropped, so this list stays empty.
 
 ---
 
+### 7.15 Local zones
+
+A **local zone** is a downloadable plain-text file (typically a raw GitHub URL) of
+`value,name` lines that the resolver answers **authoritatively**, as if the records
+were real DNS. Each line expands into one or more records that are stored and loaded
+into the DNS worker's memory. Zone **config** is returned here; the expanded
+**records** are a separate sub-resource.
+
+**Source file format** (one entry per line; `#` starts a full-line or inline comment;
+blank lines ignored):
+
+```text
+# value,name[,ttl]
+192.0.2.10,host.example.lan            # A  host.example.lan -> 192.0.2.10  (+ PTR)
+2001:db8::10,v6.example.lan            # AAAA + PTR
+host.example.lan,www.example.lan,60    # CNAME www.example.lan -> host.example.lan, ttl 60
+```
+
+- An **IP** `value` yields a forward **A**/**AAAA** record *and* the matching **PTR**
+  record for reverse lookups.
+- A **hostname** `value` yields a **CNAME** (chased to its address within the local
+  set when a client asks for A/AAAA).
+- An optional third field sets the record **TTL** in seconds (default `300`).
+
+**Resolution semantics:** a name present in *any enabled* zone is answered locally and
+**never forwarded** — if it has no record of the requested type the resolver returns
+NODATA (`NOERROR`, no answers) rather than leaking the query upstream. Explicit policy
+(`override`/`deny`) and blocklists still take precedence over local records. Locally
+answered queries appear in the query log with `last_action = "local"` and count under
+the `overridden` series in the hourly stats (§7.8). The loaded record count is exposed
+as `local_records` in `GET /stats/runtime`.
+
+**Local-zone object:**
+| field                   | type              | notes                                              |
+| ----------------------- | ----------------- | -------------------------------------------------- |
+| `id`                    | int               |                                                    |
+| `name`                  | string            | unique                                             |
+| `url`                   | string            | http(s) source URL                                 |
+| `update_interval_seconds` | int             | fetch cadence in seconds, ≥ 1; default `86400` (daily) |
+| `enabled`               | bool              | default `true`; only enabled zones are served      |
+| `record_count`          | int               | records stored from the last download (server-maintained) |
+| `last_downloaded_at`    | string \| null    | datetime of last download attempt, else `null`     |
+| `last_status`           | string \| null    | e.g. `"ok: 12 records"` or `"error: HTTP 404"`, else `null` |
+| `created_at`            | string (datetime) |                                                    |
+| `updated_at`            | string (datetime) |                                                    |
+
+Ordering: by `id` ascending. `record_count`, `last_downloaded_at`, and `last_status`
+are read-only (maintained by the downloader) — ignored if sent in a write body (and
+unknown extras are rejected).
+
+**Record object** (a sub-resource of a zone; `zone_name` is added only by the merged
+`GET /local-records` view):
+| field       | type   | notes                                           |
+| ----------- | ------ | ----------------------------------------------- |
+| `id`        | int    |                                                 |
+| `zone_id`   | int    | owning zone                                     |
+| `zone_name` | string | owning zone's name (merged view only)           |
+| `name`      | string | record name (normalized, lower-cased)           |
+| `type`      | string | `A`, `AAAA`, `CNAME`, or `PTR`                  |
+| `value`     | string | address, canonical name, or PTR target          |
+| `ttl`       | int    | answer TTL in seconds                           |
+
+#### `GET /local-zones`
+List, paginated. → `{ "status": "ok", "local_zones": [...], "total": N }`
+
+#### `GET /local-zones/{id}`
+→ `200 { "status": "ok", "local_zone": {...} }` or `404`.
+
+#### `POST /local-zones`
+Create. → `201 { "status": "ok", "local_zone": {...} }`
+```json
+{ "name": "home", "url": "https://raw.githubusercontent.com/me/dns/main/home.txt", "update_interval_seconds": 86400, "enabled": true }
+```
+Required: `name`, `url`. Validation: `name` non-empty; `url` must be an `http`/`https`
+URL with a host; `update_interval_seconds` ≥ 1. Errors: `422`, `409 conflict` (name
+already exists).
+
+> Creating a zone does **not** download it immediately — the background downloader
+> fetches it on its cadence. Use the refresh endpoint below to fetch now.
+
+#### `PUT /local-zones/{id}`
+Partial update. → `200` or `404`. Same validators; `409` if renaming to an existing name.
+
+#### `DELETE /local-zones/{id}`
+Deletes the zone **and all its stored records**. → `200 { "status": "ok", "deleted": <id> }` or `404`.
+
+#### `GET /local-zones/{id}/records`
+Lists the records stored for this zone. Supports pagination. Ordering: by `name`, then
+`type`, then `value`.
+```json
+{ "status": "ok", "records": [ { "id": 1, "zone_id": 3, "name": "host.example.lan", "type": "A", "value": "192.0.2.10", "ttl": 300 } ], "total": 2 }
+```
+→ `404 not_found` if the zone id does not exist.
+
+#### `POST /local-zones/{id}/refresh`
+Downloads the source URL immediately, parses it, and replaces the stored records. Body
+is ignored. **Synchronous.**
+- `200`: `{ "status": "ok", "local_zone": {...} }` — the returned object reflects the new `record_count`, `last_downloaded_at`, and `last_status`.
+- `404 not_found`: unknown id.
+- `502 download_failed`: the fetch failed; `detail` carries the reason (e.g. `"HTTP 404"`, a timeout, or `"local zone exceeds 8388608 bytes"`).
+
+> Records take effect in the resolver within a few seconds of a download (the DNS
+> worker reloads them on its config-refresh timer), not instantly on the API call.
+
+#### `GET /local-records`
+A **merged** view of records across every zone, each annotated with its `zone_name`.
+Supports pagination. Ordering: by `name`, then `type`, then `value`.
+
+Query params: optional `search` (case-insensitive substring over `name` **or** `value`;
+`%`/`_` matched literally), optional `type` (filter to one record type, case-insensitive),
+plus `limit`/`offset`. `total` reflects the filtered count.
+```json
+{ "status": "ok", "records": [ { "id": 1, "zone_id": 3, "zone_name": "home", "name": "host.example.lan", "type": "A", "value": "192.0.2.10", "ttl": 300 } ], "total": 1 }
+```
+
+---
+
 ## 8. Enumerations reference
 
 | Enum              | Allowed values                                      | Used by                      |
@@ -950,9 +1071,12 @@ trusted networks configured nothing is ever dropped, so this list stays empty.
 | Client `mode`     | `forward` (allow all), `deny` (block all)           | /clients/{ip}/mode           |
 | Upstream `protocol` | `udp`, `tcp`                                      | upstreams                    |
 | `default_action`  | `deny`, `forward`                                   | settings                     |
+| Local record `type` | `A`, `AAAA`, `CNAME`, `PTR`                       | local zones / records        |
 
 `override` requires a non-empty `override_response`. `blocklist` action forwards
-everything except names on an enabled blocklist (those return `NXDOMAIN`).
+everything except names on an enabled blocklist (those return `NXDOMAIN`). A query
+answered from a local zone (§7.15) is recorded with `last_action = "local"` and counts
+under the `overridden` stat series.
 
 ---
 
@@ -960,7 +1084,7 @@ everything except names on an enabled blocklist (those return `NXDOMAIN`).
 
 - **Treat timestamps as local wall-clock**, not UTC. They have no offset suffix. If you need correct ordering across DST or zones, rely on the server-provided ordering rather than reparsing.
 - **Map errors on `code`, not `error` text.** The `error`/`detail` strings are for display and may change.
-- **Creates that can 409:** policies (duplicate `client`+`domain`), blocklists (duplicate `name`), and trusted networks (duplicate `cidr`). Surface these as friendly "already exists" messages. Upstreams never 409.
+- **Creates that can 409:** policies (duplicate `client`+`domain`), blocklists (duplicate `name`), local zones (duplicate `name`), and trusted networks (duplicate `cidr`). Surface these as friendly "already exists" messages. Upstreams never 409.
 - **`PUT` is a partial update** (send only changed fields). Sending `null` explicitly will set a nullable field to null; omitting a field leaves it unchanged.
 - **Unknown fields are rejected** with `422` on every write endpoint — don't send extra keys (e.g. read-only blocklist stats, or `id`/timestamps).
 - **Blocklist refresh is synchronous and can be slow/large;** show a spinner and handle `502 download_failed` with the returned `detail`.
@@ -968,4 +1092,5 @@ everything except names on an enabled blocklist (those return `NXDOMAIN`).
 - **`DELETE /queries` clears everything** and returns a row count — guard it behind confirmation.
 - **Recent client queries are short-lived.** `GET /clients/{ip}/queries` only returns events from the last ~1 hour (older ones are pruned); it's a live tail, not a historical log — use `GET /queries` / `GET /requests` for aggregates.
 - **New blocklists aren't downloaded on create;** either wait for the downloader's cadence or call the refresh endpoint to populate `domain_count`.
+- **Local zones behave like blocklists on write:** nothing is fetched on create, refresh is **synchronous** (handle `502 download_failed` with the returned `detail`), and new/edited records only affect resolution a few seconds later when the DNS worker reloads them. A name in an enabled zone is answered authoritatively and never forwarded.
 - **No streaming/websockets.** Query stats and blocklist status update via polling; poll `GET /queries` and `GET /blocklists` at whatever interval suits the UI.

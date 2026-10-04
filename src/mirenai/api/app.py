@@ -10,6 +10,7 @@ from mirenai.api.routes.client_modes import register_client_mode_routes
 from mirenai.api.routes.foreign_clients import register_foreign_client_routes
 from mirenai.api.routes.health import register_health_routes
 from mirenai.api.routes.hosts import register_host_routes
+from mirenai.api.routes.local_zones import register_local_zone_routes
 from mirenai.api.routes.policies import register_policy_routes
 from mirenai.api.routes.query_events import register_query_event_routes
 from mirenai.api.routes.query_log import register_query_routes
@@ -39,6 +40,7 @@ def create_app() -> Bottle:
     register_settings_routes(app)
     register_blocklist_routes(app)
     register_host_routes(app)
+    register_local_zone_routes(app)
     register_stats_routes(app)
     register_request_routes(app)
     register_cache_routes(app)

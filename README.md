@@ -23,6 +23,10 @@ from one policy table.
   return `NXDOMAIN` for another.
 - **Sinkholes and overrides** — hand back your own A/AAAA records for a name: kill
   ad domains, pin an internal service, do split-horizon DNS.
+- **Local DNS from a file** — point it at one or more plain-text files (e.g. raw
+  GitHub URLs) of `ip_address,domain` lines; it fetches them on a schedule (and on
+  demand), builds forward **and** reverse records (A/AAAA + PTR, or a CNAME when the
+  value is a name), and answers them authoritatively from memory like real DNS.
 - **Global blocklists** — feed it hosts-format, domain-list, or Adblock/uBO
   (`||domain^`) URLs; it downloads and refreshes them on a schedule and blocks
   listed names (and their subdomains) for every client. Exempt any device that
@@ -43,8 +47,8 @@ from one policy table.
   gauges like cache size and blocklist size.
 - **Device names, optionally** — sync friendly names and icons for each client
   from [Sando](https://github.com/mayberryjp/sando).
-- **One moving part** — the DNS server, blocklist downloader, and API run together
-  under supervisord, backed by SQLite on a single volume.
+- **One moving part** — the DNS server, blocklist and local-zone downloaders, and
+  API run together under supervisord, backed by SQLite on a single volume.
 
 ## How screening works
 
@@ -162,6 +166,7 @@ per-endpoint shapes.
 | Hosts        | `GET /hosts`, `GET/PUT/DELETE /hosts/{id}`, `POST /hosts/{id}/sync` (Sando)                           |
 | Upstreams    | `GET/POST /upstreams`, `PUT/DELETE /upstreams/{id}`, `POST /upstreams/{id}/check` (RTT probe)         |
 | Blocklists   | `GET/POST /blocklists`, `GET/PUT/DELETE /blocklists/{id}`, `GET /blocklists/{id}/domains`, `GET /blocklists/search`, `POST /blocklists/{id}/refresh`, `GET/POST /blocklists/overrides`, `DELETE /blocklists/overrides/{id}` |
+| Local zones  | `GET/POST /local-zones`, `GET/PUT/DELETE /local-zones/{id}`, `GET /local-zones/{id}/records`, `POST /local-zones/{id}/refresh`, `GET /local-records` |
 | Query log    | `GET /queries` (paginated, `?search=` by client or domain), `DELETE /queries`                        |
 | Recent queries | `GET /clients/{ip}/queries` — live per-client request/response events (`?seconds=`, `?limit=`)     |
 | Stats        | `GET /stats`, `GET /stats/site`, `GET /stats/cache-outcomes`, `GET /stats/new-domains`, `GET /stats/new-domains/recent`, `GET /stats/runtime`, `GET /stats/upstreams` |
@@ -178,7 +183,11 @@ List endpoints take optional `limit`/`offset`.
 Stored in the database, read with `GET /settings`, changed with `PUT /settings`:
 `cache_enabled`, `cache_max_ttl`, `cache_min_ttl`, `cache_max_entries`,
 `forward_timeout`, `default_action`, `refresh_seconds`, `query_flush_seconds`,
-`log_queries`, `ipv6_enabled`.
+`log_queries`, `ipv6_enabled`, `drop_private_ptr`.
+
+`drop_private_ptr` (on by default) answers reverse (`PTR`) lookups for RFC1918
+private addresses with NODATA, and skips logging them, unless the address is
+defined in a local zone — so noisy private-range reverse scans don't fill the logs.
 
 Because the DNS server re-reads settings on the `refresh_seconds` timer, edits
 apply without a restart.
@@ -191,9 +200,12 @@ apply without a restart.
 - **Blocklist downloader** (`mirenai.workers.blocklist_downloader`) — fetches each
   enabled blocklist when its interval elapses and stores the domains. Its own
   process.
+- **Local-zone downloader** (`mirenai.workers.local_zones`) — fetches each enabled
+  local zone when its interval elapses and stores its parsed records. Its own
+  process.
 - **API** (`mirenai.api`) — Bottle on Waitress; CRUD and stats.
 
-All three run under supervisord in one container. Configuration state is SQLite
+All four run under supervisord in one container. Configuration state is SQLite
 (`mirenai.db`); blocklist domains and known clients get their own SQLite files;
 everything persists on the `mirenai-data` volume. The web UI ships from a separate
 repository and talks to the API.
@@ -212,6 +224,17 @@ A few specifics worth knowing:
 - **Blocklists.** Hosts format (`0.0.0.0 ads.example.com`) and domain-only lines
   are both accepted; `#` comments, blank lines, and bare IPs are ignored. Listing
   `example.com` also blocks its subdomains.
+- **Local zones.** Each zone is an http(s) file of `value,name` lines (`#` comments,
+  full-line or inline, and blank lines are ignored; an optional third field sets the
+  record TTL). An IP `value` produces an A/AAAA record **and** the matching PTR for
+  reverse lookups; a hostname `value` produces a CNAME, which is chased to its
+  address within the local set. Records from *enabled* zones are loaded into the DNS
+  worker's memory and answered authoritatively — a name defined locally is never
+  forwarded, returning NODATA for a type it doesn't carry instead of leaking to an
+  upstream. Explicit policy (override/deny) and blocklists still take precedence.
+  Zones refresh on each one's `update_interval_seconds` cadence (default 86400s,
+  i.e. daily) or immediately via `POST /local-zones/{id}/refresh`; the loaded record
+  count shows up as `local_records` in `GET /stats/runtime`.
 - **Trusted networks.** With no `trusted-networks` rows the resolver answers every
   client. Add one or more source subnets (e.g. `10.2.10.0/24`, multiple allowed)
   and any query from outside them is dropped before parsing — no reply on UDP or
@@ -239,6 +262,7 @@ make typecheck    # mypy (strict)
 python -m mirenai.api_main                       # run the API
 python -m mirenai.workers.dns_server             # run the DNS server
 python -m mirenai.workers.blocklist_downloader   # run the blocklist downloader
+python -m mirenai.workers.local_zones            # run the local-zone downloader
 ```
 
 ## Related

@@ -187,20 +187,24 @@ class DnsCacheEntry(Base):
 class UncacheableResponse(Base):
     """A forwarded answer the resolver could not cache, with a reason and hit count.
 
-    One row per ``(domain, qtype, reason)``: the DNS worker aggregates these in
-    memory and writes them in a batch (upsert ``hits += n``, ``last_seen`` and
-    ``last_ttl`` refreshed). It explains *why* an answer wasn't cached — negative
-    (``nxdomain`` / ``error``), ``nodata``, ``zero-ttl``, or ``upstream-failure`` —
-    so a low cache-hit rate can be diagnosed. ``last_ttl`` is the most recent
-    upstream TTL observed (NULL when the response carried no answer records).
+    One row per ``(client, domain, qtype, reason)``: the DNS worker aggregates these
+    in memory and writes them in a batch (upsert ``hits += n``, ``last_seen`` and
+    ``last_ttl`` refreshed), attributing each miss to the requesting ``client``. It
+    explains *why* an answer wasn't cached — negative (``nxdomain`` / ``error``),
+    ``nodata``, ``zero-ttl``, or ``upstream-failure`` — so a low cache-hit rate can be
+    diagnosed. ``last_ttl`` is the most recent upstream TTL observed (NULL when the
+    response carried no answer records).
     """
 
     __tablename__ = "uncacheable_responses"
     __table_args__ = (
-        UniqueConstraint("domain", "qtype", "reason", name="uq_uncacheable_domain_qtype_reason"),
+        UniqueConstraint(
+            "client", "domain", "qtype", "reason", name="uq_uncacheable_client_domain_qtype_reason"
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client: Mapped[str] = mapped_column(String(64), nullable=False)
     domain: Mapped[str] = mapped_column(String(255), nullable=False)
     qtype: Mapped[str] = mapped_column(String(16), nullable=False)
     reason: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -398,6 +402,59 @@ class BlocklistOverride(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW, onupdate=_LOCAL_NOW
     )
+
+
+class LocalZone(Base):
+    """Configuration for a downloadable file of locally-served DNS records.
+
+    Each zone is an http(s) source (typically a raw GitHub URL) of ``value,name``
+    lines. The downloader fetches it on its cadence, parses it, and stores the
+    expanded records (:class:`LocalDnsRecord`); the DNS server then answers them
+    authoritatively. This row only tracks how and when to fetch.
+    """
+
+    __tablename__ = "local_zones"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    update_interval_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=86400)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    record_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_downloaded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_status: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW, onupdate=_LOCAL_NOW
+    )
+
+
+class LocalDnsRecord(Base):
+    """One expanded DNS record produced from a :class:`LocalZone`'s source file.
+
+    A ``value,name`` source line expands into a forward record (``A``/``AAAA`` or
+    ``CNAME``) and, for addresses, a reverse ``PTR`` record. Records are replaced
+    wholesale on each download and loaded into the DNS worker's memory, where they
+    are served authoritatively.
+    """
+
+    __tablename__ = "local_dns_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "zone_id", "name", "rtype", "value", name="uq_local_dns_records_zone_name_type_value"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    zone_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    rtype: Mapped[str] = mapped_column(String(16), nullable=False)
+    value: Mapped[str] = mapped_column(String(255), nullable=False)
+    ttl: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
 
 
 class BlocklistDomain(BlocklistBase):

@@ -26,6 +26,7 @@ _RESULT_COLUMNS = {
     "forward": "forwarded",
     "forward-cache": "cached",
     "override": "overridden",
+    "local": "overridden",
     "deny": "denied",
     "blocklist": "blocked",
     "servfail": "servfail",

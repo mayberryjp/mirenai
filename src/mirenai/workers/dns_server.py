@@ -39,6 +39,7 @@ from mirenai.repository.client_requests import materialize_new_domains, record_c
 from mirenai.repository.client_stats import record_client_stats
 from mirenai.repository.foreign_clients import record_foreign_clients
 from mirenai.repository.hosts import load_blocklist_excluded, load_known_hosts, record_hosts
+from mirenai.repository.local_zones import load_local_records
 from mirenai.repository.policies import ensure_client_policy, load_rules
 from mirenai.repository.query_events import record_query_events
 from mirenai.repository.query_log import record_queries
@@ -75,6 +76,7 @@ def _runtime_snapshot(cache: TTLCache[bytes], state: RuntimeState) -> dict[str, 
         "cache_size": len(cache),
         "cache_capacity": cache.capacity,
         "blocklist_domains": len(state.blocklist),
+        "local_records": len(state.local_records),
         "upstreams": len(state.upstreams),
         "policies": len(state.policies),
     }
@@ -173,6 +175,7 @@ def _build_state() -> RuntimeState:
                 load_blocklist=load_blocklist_domains,
                 load_blocklist_excluded=load_blocklist_excluded,
                 load_trusted_networks=load_trusted_networks,
+                load_local_records=load_local_records,
             )
         except Exception:
             log.warning("database not ready; retrying in %ds", _DB_RETRY_SECONDS)

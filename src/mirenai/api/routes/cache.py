@@ -29,11 +29,14 @@ def register_cache_routes(app: Bottle) -> None:
         if err is not None:
             return err
         reason = (request.query.get("reason") or "").strip() or None
+        client = request.query.get("client") or None
         if not paginate:
-            rows = uncacheable_repo.list_uncacheable(reason=reason)
+            rows = uncacheable_repo.list_uncacheable(reason=reason, client=client)
             return {"status": "ok", "uncacheable": rows, "total": len(rows)}
-        rows = uncacheable_repo.list_uncacheable(limit=limit, offset=offset, reason=reason)
-        total = uncacheable_repo.count_uncacheable(reason=reason)
+        rows = uncacheable_repo.list_uncacheable(
+            limit=limit, offset=offset, reason=reason, client=client
+        )
+        total = uncacheable_repo.count_uncacheable(reason=reason, client=client)
         return {"status": "ok", "uncacheable": rows, "total": total}
 
     @app.post("/cache/flush")

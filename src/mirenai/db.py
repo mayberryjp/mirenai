@@ -156,6 +156,8 @@ def init_db() -> None:
     _ensure_blocklist_format_column()
     _ensure_client_hourly_stats_foreign_column()
     _ensure_query_log_response_column()
+    _ensure_uncacheable_client_column()
+    _ensure_local_zone_interval_seconds_column()
 
     from mirenai.repository.blocklists import ensure_default_blocklist
     from mirenai.repository.upstreams import ensure_default_upstream
@@ -261,3 +263,47 @@ def _ensure_query_log_response_column() -> None:
         columns = {row[1] for row in conn.execute(text("PRAGMA table_info(query_log)"))}
         if columns and "last_response" not in columns:
             conn.execute(text("ALTER TABLE query_log ADD COLUMN last_response TEXT"))
+
+
+def _ensure_uncacheable_client_column() -> None:
+    """Add per-client attribution to ``uncacheable_responses``.
+
+    The table originally keyed on ``(domain, qtype, reason)``; recording which
+    client drove each cache-miss changes the key to ``(client, domain, qtype,
+    reason)``. SQLite can't alter a table's UNIQUE constraint in place and this
+    project has no migration tool, so a pre-existing table — which holds only
+    rolling diagnostic aggregates — is dropped and recreated with the new schema.
+    Idempotent and a no-op on fresh databases (where ``create_all`` already added
+    the column).
+    """
+    engine = get_engine()
+    dropped = False
+    with engine.begin() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(uncacheable_responses)"))}
+        if columns and "client" not in columns:
+            conn.execute(text("DROP TABLE uncacheable_responses"))
+            dropped = True
+    if dropped:
+        Base.metadata.tables["uncacheable_responses"].create(engine, checkfirst=True)
+
+
+def _ensure_local_zone_interval_seconds_column() -> None:
+    """Rename ``local_zones.update_interval_hours`` to ``update_interval_seconds``.
+
+    The cadence was briefly shipped in hours and is now stored in seconds.
+    ``create_all`` never alters existing tables and this project has no migration
+    tool, so a pre-existing ``local_zones`` table needs a one-off ``RENAME COLUMN``.
+    Idempotent and a no-op on fresh databases (where ``create_all`` already added
+    the seconds column).
+    """
+    with get_engine().begin() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(local_zones)"))}
+        has_old = "update_interval_hours" in columns
+        has_new = "update_interval_seconds" in columns
+        if columns and has_old and not has_new:
+            conn.execute(
+                text(
+                    "ALTER TABLE local_zones "
+                    "RENAME COLUMN update_interval_hours TO update_interval_seconds"
+                )
+            )

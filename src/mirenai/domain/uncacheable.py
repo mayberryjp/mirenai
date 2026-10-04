@@ -1,12 +1,12 @@
 """In-memory aggregation of forwarded answers that could not be cached.
 
-Counts each ``(domain, qtype, reason)`` the resolver declined to cache and flushes
-aggregated rows to the database on a timer, where they upsert (``hits += n``,
-``last_seen``/``last_ttl`` refreshed). Surfaces *why* answers aren't cached so a
-low cache-hit rate can be diagnosed. The number of distinct keys held between
-flushes is capped so a flood of unique names (e.g. NXDOMAIN spam) can't grow
-memory without bound: once the cap is reached, hits for already-tracked keys keep
-counting but previously-unseen keys are skipped.
+Counts each ``(client, domain, qtype, reason)`` the resolver declined to cache and
+flushes aggregated rows to the database on a timer, where they upsert (``hits += n``,
+``last_seen``/``last_ttl`` refreshed). Surfaces *why* answers aren't cached, and
+*which client* asked, so a low cache-hit rate can be diagnosed. The number of
+distinct keys held between flushes is capped so a flood of unique names (e.g.
+NXDOMAIN spam) can't grow memory without bound: once the cap is reached, hits for
+already-tracked keys keep counting but previously-unseen keys are skipped.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ DEFAULT_MAX_KEYS = 2048
 
 @dataclass(frozen=True)
 class UncacheableAgg:
+    client: str
     domain: str
     qtype: str
     reason: str
@@ -46,12 +47,12 @@ class UncacheableBuffer:
         self._flush_seconds = max(1, flush_seconds)
         self._max_keys = max(1, max_keys)
         self._lock = threading.Lock()
-        # (domain, qtype, reason) -> (hits, last_ttl)
-        self._data: dict[tuple[str, str, str], tuple[int, int | None]] = {}
+        # (client, domain, qtype, reason) -> (hits, last_ttl)
+        self._data: dict[tuple[str, str, str, str], tuple[int, int | None]] = {}
         self._stop = threading.Event()
 
-    def add(self, domain: str, qtype: str, reason: str, ttl: int | None) -> None:
-        key = (domain, qtype, reason)
+    def add(self, client: str, domain: str, qtype: str, reason: str, ttl: int | None) -> None:
+        key = (client, domain, qtype, reason)
         with self._lock:
             existing = self._data.get(key)
             if existing is not None:
@@ -67,7 +68,7 @@ class UncacheableBuffer:
             self._data = {}
         rows = [
             UncacheableAgg(
-                domain=key[0], qtype=key[1], reason=key[2], last_ttl=ttl, hits=hits
+                client=key[0], domain=key[1], qtype=key[2], reason=key[3], last_ttl=ttl, hits=hits
             )
             for key, (hits, ttl) in snapshot.items()
         ]

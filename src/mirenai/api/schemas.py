@@ -40,6 +40,12 @@ def _check_interval_hours(value: int) -> int:
     return value
 
 
+def _check_interval_seconds(value: int) -> int:
+    if value < 1:
+        raise ValueError("update_interval_seconds must be at least 1")
+    return value
+
+
 def _check_cidr(value: str) -> str:
     try:
         # strict=False canonicalizes host bits (10.2.10.5/24 -> 10.2.10.0/24).
@@ -227,6 +233,7 @@ class SettingsUpdate(BaseModel):
     query_flush_seconds: int | None = None
     log_queries: bool | None = None
     ipv6_enabled: bool | None = None
+    drop_private_ptr: bool | None = None
 
     @field_validator("default_action")
     @classmethod
@@ -300,6 +307,58 @@ class BlocklistOverrideCreate(BaseModel):
         if normalized is None:
             raise ValueError("domain must be a valid domain name")
         return normalized
+
+
+class LocalZoneCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    url: str
+    update_interval_seconds: int = 86400
+    enabled: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("name must not be empty")
+        return value
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, value: str) -> str:
+        return _check_url(value)
+
+    @field_validator("update_interval_seconds")
+    @classmethod
+    def _validate_interval(cls, value: int) -> int:
+        return _check_interval_seconds(value)
+
+
+class LocalZoneUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    url: str | None = None
+    update_interval_seconds: int | None = None
+    enabled: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("name must not be empty")
+        return value
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, value: str | None) -> str | None:
+        return _check_url(value) if value is not None else value
+
+    @field_validator("update_interval_seconds")
+    @classmethod
+    def _validate_interval(cls, value: int | None) -> int | None:
+        return _check_interval_seconds(value) if value is not None else value
 
 
 class TrustedNetworkCreate(BaseModel):
