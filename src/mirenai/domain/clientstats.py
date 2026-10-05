@@ -26,7 +26,7 @@ _RESULT_COLUMNS = {
     "forward": "forwarded",
     "forward-cache": "cached",
     "override": "overridden",
-    "local": "overridden",
+    "local": "local",
     "deny": "denied",
     "blocklist": "blocked",
     "servfail": "servfail",
@@ -42,6 +42,7 @@ class ClientStatAgg:
     forwarded: int
     cached: int
     overridden: int
+    local: int
     denied: int
     blocked: int
     servfail: int
@@ -90,6 +91,7 @@ class ClientStatsBuffer:
                 forwarded=counter.get("forwarded", 0),
                 cached=counter.get("cached", 0),
                 overridden=counter.get("overridden", 0),
+                local=counter.get("local", 0),
                 denied=counter.get("denied", 0),
                 blocked=counter.get("blocked", 0),
                 servfail=counter.get("servfail", 0),

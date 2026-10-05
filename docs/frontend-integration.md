@@ -519,12 +519,13 @@ is **read-only** — there are no create/update/delete endpoints.
 | `forwarded`  | int               | answered by an upstream (`forward`)                         |
 | `cached`     | int               | answered from cache (`forward-cache`)                       |
 | `overridden` | int               | answered by a policy override (`override`)                  |
+| `local`      | int               | answered authoritatively from a local zone (`local`)        |
 | `denied`     | int               | refused by policy — `NXDOMAIN` (`deny`)                     |
 | `blocked`    | int               | refused by blocklist — `NXDOMAIN` (`blocklist`)             |
 | `servfail`   | int               | upstream failure (`servfail`)                               |
 | `foreign`    | int               | queries dropped from untrusted source networks (`foreign`)  |
 
-"Approved" = `forwarded + cached + overridden`; "denied" = `denied + blocked`. `total` may exceed the sum of the columns if a future result type isn't itemized, so treat the columns as a breakdown of (not necessarily equal to) `total`.
+"Approved" = `forwarded + cached + overridden + local`; "denied" = `denied + blocked`. `total` may exceed the sum of the columns if a future result type isn't itemized, so treat the columns as a breakdown of (not necessarily equal to) `total`.
 
 `foreign` counts queries dropped because the source IP was outside the configured trusted subnets (see §7.13). These are tallied under a synthetic `client` of `"foreign"`, so for a real client `foreign` is always `0` — read the meaningful value from `GET /stats/site`, or query `GET /stats?client=foreign`. For the **individual** offending source IPs (per-IP hit counts, not just the aggregate), see §7.14 (`GET /foreign-clients`).
 
@@ -556,6 +557,7 @@ Site-wide hourly totals — the same counts **summed across all clients**, one r
 | `forwarded`  | int               | Σ `forward`                                        |
 | `cached`     | int               | Σ `forward-cache`                                  |
 | `overridden` | int               | Σ `override`                                       |
+| `local`      | int               | Σ `local`                                          |
 | `denied`     | int               | Σ `deny`                                           |
 | `blocked`    | int               | Σ `blocklist`                                      |
 | `servfail`   | int               | Σ `servfail`                                       |
@@ -675,15 +677,17 @@ Keys may be added over time — treat `stats` as an open map.
 
 #### `GET /stats/upstreams`
 Per-upstream forward round-trip time, bucketed by wall-clock hour — the feed for a
-latency graph. The DNS server times each successful forward and aggregates by
-`(hour, upstream address)`; buckets older than 500 hours are purged. Read-only.
+latency graph. The DNS server times each successful forward and, so the graph stays
+dense when heavy caching means few forwards, also sends one synthetic timed query
+per upstream every 60s; both blend into the same `(hour, upstream address)` buckets.
+Buckets older than 500 hours are purged. Read-only.
 
 **Row object:**
 | field        | type              | notes                                                  |
 | ------------ | ----------------- | ------------------------------------------------------ |
 | `hour_start` | string (datetime) | top of the hour, e.g. `"2026-09-28T14:00:00"`          |
 | `address`    | string            | upstream resolver address (e.g. `8.8.8.8`)             |
-| `samples`    | int               | forwarded queries measured in that hour                |
+| `samples`    | int               | round-trip measurements that hour (forwards + probes)  |
 | `avg_ms`     | float \| null     | mean round-trip time (ms); `null` when `samples` is 0  |
 | `max_ms`     | float \| null     | worst round-trip time (ms); `null` when `samples` is 0 |
 
@@ -975,7 +979,7 @@ host.example.lan,www.example.lan,60    # CNAME www.example.lan -> host.example.l
 NODATA (`NOERROR`, no answers) rather than leaking the query upstream. Explicit policy
 (`override`/`deny`) and blocklists still take precedence over local records. Locally
 answered queries appear in the query log with `last_action = "local"` and count under
-the `overridden` series in the hourly stats (§7.8). The loaded record count is exposed
+the `local` series in the hourly stats (§7.8). The loaded record count is exposed
 as `local_records` in `GET /stats/runtime`.
 
 **Local-zone object:**
@@ -1076,7 +1080,7 @@ plus `limit`/`offset`. `total` reflects the filtered count.
 `override` requires a non-empty `override_response`. `blocklist` action forwards
 everything except names on an enabled blocklist (those return `NXDOMAIN`). A query
 answered from a local zone (§7.15) is recorded with `last_action = "local"` and counts
-under the `overridden` stat series.
+under the `local` stat series.
 
 ---
 

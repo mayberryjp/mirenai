@@ -155,6 +155,7 @@ def init_db() -> None:
     _ensure_hosts_flag_new_domains_column()
     _ensure_blocklist_format_column()
     _ensure_client_hourly_stats_foreign_column()
+    _ensure_client_hourly_stats_local_column()
     _ensure_query_log_response_column()
     _ensure_uncacheable_client_column()
     _ensure_local_zone_interval_seconds_column()
@@ -249,6 +250,22 @@ def _ensure_client_hourly_stats_foreign_column() -> None:
         if columns and "foreign" not in columns:
             conn.execute(
                 text('ALTER TABLE client_hourly_stats ADD COLUMN "foreign" BIGINT NOT NULL DEFAULT 0')
+            )
+
+
+def _ensure_client_hourly_stats_local_column() -> None:
+    """Add ``client_hourly_stats.local`` to a config database created before it.
+
+    ``create_all`` never alters existing tables and this project has no migration
+    tool, so a pre-existing ``client_hourly_stats`` table needs a one-off
+    ``ALTER TABLE``. Idempotent and a no-op on fresh databases (where ``create_all``
+    already added it).
+    """
+    with get_engine().begin() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(client_hourly_stats)"))}
+        if columns and "local" not in columns:
+            conn.execute(
+                text("ALTER TABLE client_hourly_stats ADD COLUMN local BIGINT NOT NULL DEFAULT 0")
             )
 
 

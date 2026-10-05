@@ -282,6 +282,9 @@ class ClientHourlyStat(Base):
     forwarded: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     cached: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     overridden: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    local: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
     denied: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     blocked: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     servfail: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)

@@ -26,8 +26,9 @@ from mirenai.domain.hosts import HostTracker
 from mirenai.domain.querybuffer import QueryBuffer
 from mirenai.domain.queryevents import QueryEventBuffer
 from mirenai.domain.resolver import DnsResolver
-from mirenai.domain.state import RuntimeState
+from mirenai.domain.state import RuntimeState, UpstreamServer
 from mirenai.domain.uncacheable import UncacheableBuffer
+from mirenai.domain.upstream_probe import ProbeError, probe_upstream
 from mirenai.domain.upstreamstats import UpstreamRttBuffer
 from mirenai.integrations.sando import sync_host_from_sando
 from mirenai.logging import configure_logging, get_logger
@@ -57,6 +58,7 @@ _STATS_FLUSH_SECONDS = 3600
 _REQUESTS_FLUSH_SECONDS = 3600
 _NEW_DOMAIN_MATERIALIZE_SECONDS = 3600
 _CACHE_SNAPSHOT_SECONDS = 30
+_UPSTREAM_PROBE_SECONDS = 60
 
 
 def _run_new_domain_materializer(stop: threading.Event) -> None:
@@ -102,6 +104,33 @@ def _run_cache_snapshot(cache: TTLCache[bytes], interval: int, stop: threading.E
             record_cache_entries(build_cache_snapshot(cache))
         except Exception:
             log.exception("cache snapshot flush failed")
+        if stop.wait(interval):
+            return
+
+
+def _probe_upstreams_once(
+    upstreams: list[UpstreamServer], timeout: float, rtt: UpstreamRttBuffer
+) -> None:
+    """Time one synthetic query per upstream and feed the results to the RTT buffer."""
+    for server in upstreams:
+        try:
+            rtt_ms = probe_upstream(server, timeout)
+        except ProbeError as exc:
+            log.debug("upstream probe failed for %s: %s", server.address, exc)
+            continue
+        rtt.add(server.address, rtt_ms)
+
+
+def _run_upstream_prober(
+    state: RuntimeState, rtt: UpstreamRttBuffer, interval: int, stop: threading.Event
+) -> None:
+    """Probe every upstream on a timer so the latency graph stays dense under heavy caching.
+
+    Organic forwards only sample an upstream on a cache miss; these synthetic samples
+    blend into the same buffer so each upstream keeps a continuous series.
+    """
+    while True:
+        _probe_upstreams_once(state.upstreams, state.settings.forward_timeout, rtt)
         if stop.wait(interval):
             return
 
@@ -293,6 +322,13 @@ def main() -> None:
         name="cache-snapshot",
         daemon=True,
     ).start()
+    upstream_probe_stop = threading.Event()
+    threading.Thread(
+        target=_run_upstream_prober,
+        args=(state, rtt, _UPSTREAM_PROBE_SECONDS, upstream_probe_stop),
+        name="upstream-prober",
+        daemon=True,
+    ).start()
     udp_server.start_thread()
     tcp_server.start_thread()
     log.info(
@@ -324,6 +360,7 @@ def main() -> None:
         runtime_stats_stop.set()
         cache_flush_stop.set()
         cache_snapshot_stop.set()
+        upstream_probe_stop.set()
 
 
 if __name__ == "__main__":
