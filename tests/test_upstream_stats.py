@@ -41,6 +41,15 @@ def test_buffer_aggregates_samples_total_max() -> None:
     assert by_addr["1.1.1.1"].samples == 1
 
 
+def test_uncovered_reflects_samples_and_probe_marks() -> None:
+    buf = UpstreamRttBuffer(flush=lambda rows: None, flush_seconds=3600)
+    assert buf.uncovered(["1.1.1.1", "8.8.8.8"]) == ["1.1.1.1", "8.8.8.8"]
+    buf.add("1.1.1.1", 10.0)
+    assert buf.uncovered(["1.1.1.1", "8.8.8.8"]) == ["8.8.8.8"]
+    buf.mark_probed("8.8.8.8")
+    assert buf.uncovered(["1.1.1.1", "8.8.8.8"]) == []
+
+
 def test_record_and_list_computes_avg(temp_config_db: None) -> None:
     hour = _hour(datetime.now())
     repo.record_upstream_rtt([UpstreamRttAgg(hour, "8.8.8.8", 2, 40.0, 30.0)])

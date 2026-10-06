@@ -680,9 +680,12 @@ Keys may be added over time — treat `stats` as an open map.
 #### `GET /stats/upstreams`
 Per-upstream forward round-trip time, bucketed by wall-clock hour — the feed for a
 latency graph. The DNS server times each successful forward and, so the graph stays
-dense when heavy caching means few forwards, also sends one synthetic timed query
-per upstream every 60s; both blend into the same `(hour, upstream address)` buckets.
-Buckets older than 500 hours are purged. Read-only.
+dense when heavy caching means few forwards, backfills at most one synthetic timed
+query per upstream per hour — only when that upstream still has no real sample for
+the current hour, sent just before the buffer flushes. Organic and synthetic samples
+blend into the same `(hour, upstream address)` buckets, so an hour that already saw
+real forward traffic records no synthetic sample. Buckets older than 500 hours are
+purged. Read-only.
 
 **Row object:**
 | field        | type              | notes                                                  |
