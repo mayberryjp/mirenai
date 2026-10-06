@@ -366,6 +366,8 @@ Each row carries a `blocked` boolean: `true` when its `domain` (or any parent do
 
 Optional `search=<text>` query param filters server-side to rows where **`client` OR `domain`** contains `<text>` (case-insensitive substring; `%`/`_` are matched literally). `total` reflects the filtered count, so pagination stays correct. Combine with `limit`/`offset` as usual.
 
+Optional `client=<ip>` query param filters server-side to rows for **exactly** that client IP (not a substring — `10.0.0.5` does not match `10.0.0.50`). Combines with `search`, `limit`/`offset`, and `total`.
+
 #### `GET /queries/top-blocked`
 The most-queried domains that are on an **enabled** blocklist, ranked by total query count — a "top offenders" view for a dashboard. → `{ "status": "ok", "domains": [...], "total": N }`
 
@@ -585,10 +587,10 @@ the forwards by cache outcome. Long format: one row per `(hour, reason)`. Read-o
 **Reasons:**
 | reason             | meaning                                                                 |
 | ------------------ | ----------------------------------------------------------------------- |
-| `cached`           | answer was cacheable and stored (good — the next query can be a hit)     |
-| `nxdomain`         | upstream returned `NXDOMAIN`; not cached, so it recurs                   |
+| `cached`           | answer was cacheable and stored — a positive reply, or an NXDOMAIN/NODATA negatively cached from the response SOA (next query can be a hit) |
+| `nxdomain`         | upstream returned `NXDOMAIN` with no SOA to bound a negative cache, so it recurs |
 | `error`            | upstream returned another non-`NOERROR` rcode (e.g. `REFUSED`)          |
-| `nodata`           | `NOERROR` with no answer records (e.g. `AAAA` for an IPv4-only name)     |
+| `nodata`           | `NOERROR` with no answer records and no SOA to bound a negative cache   |
 | `zero-ttl`         | positive answer whose TTL clamped to 0 (needs `cache_min_ttl = 0`)      |
 | `upstream-failure` | every upstream failed; the resolver returned `SERVFAIL`                 |
 
@@ -824,9 +826,9 @@ Supports `limit`/`offset`, an optional `?reason=` filter, and an optional
 **Reasons:**
 | reason             | meaning                                                                 |
 | ------------------ | ----------------------------------------------------------------------- |
-| `nxdomain`         | upstream returned `NXDOMAIN` (name doesn't exist); never cached         |
+| `nxdomain`         | upstream returned `NXDOMAIN` with no SOA to bound a negative cache (with one, it's cached per RFC 2308) |
 | `error`            | upstream returned another non-`NOERROR` rcode (e.g. `REFUSED`)          |
-| `nodata`           | `NOERROR` but no answer records (e.g. `AAAA` for an IPv4-only name)      |
+| `nodata`           | `NOERROR` but no answer records and no SOA to bound a negative cache     |
 | `zero-ttl`         | positive answer whose TTL clamped to 0 (needs `cache_min_ttl = 0`)      |
 | `upstream-failure` | every upstream failed; the resolver returned `SERVFAIL`                 |
 

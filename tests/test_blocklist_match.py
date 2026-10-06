@@ -120,6 +120,15 @@ def test_queries_route_includes_blocked(temp_dbs: None) -> None:
     assert flags == {"ads.example.com": True, "safe.org": False}
 
 
+def test_queries_route_filters_by_client(temp_dbs: None) -> None:
+    _add_query("10.0.0.5", "a.example")
+    _add_query("10.0.0.50", "b.example")
+    app = TestApp(create_app())
+    body = app.get("/queries?client=10.0.0.5").json
+    assert [row["domain"] for row in body["queries"]] == ["a.example"]
+    assert body["total"] == 1
+
+
 def test_recent_new_domains_route_includes_blocked(temp_dbs: None) -> None:
     _seed_list(["example.com"])
     _add_request("10.0.0.1", "ads.example.com")  # subdomain of a listed name

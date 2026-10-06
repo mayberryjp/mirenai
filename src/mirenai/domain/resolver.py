@@ -76,6 +76,21 @@ def _cache_key(qname: str, qtype: int, qclass: int) -> str:
     return f"{normalize_domain(qname)}|{qtype}|{qclass}"
 
 
+def _negative_ttl(reply: DNSRecord, settings: RuntimeSettings) -> int | None:
+    """RFC 2308 negative-cache TTL from the authority SOA, or ``None`` if absent.
+
+    The lifetime is the smaller of the SOA record's own TTL and its MINIMUM field,
+    clamped to ``[cache_min_ttl, cache_max_ttl]``. Without an SOA there is nothing to
+    bound the negative lifetime, so the caller leaves the answer uncached.
+    """
+    soa = next((record for record in reply.auth if record.rtype == QTYPE.SOA), None)
+    if soa is None:
+        return None
+    minimum = int(soa.rdata.times[4])  # SOA MINIMUM is the last of the five time fields
+    ttl = min(int(soa.ttl), minimum)
+    return max(settings.cache_min_ttl, min(ttl, settings.cache_max_ttl))
+
+
 # Guard against a CNAME loop while chasing a local alias chain to its address.
 _MAX_CNAME_DEPTH = 8
 
@@ -349,22 +364,26 @@ class DnsResolver:
         settings: RuntimeSettings,
         client: str,
     ) -> None:
-        """Cache a positive answer, or record why it could not be cached.
+        """Cache a positive or negative answer, or record why it could not be cached.
 
         Only called when caching is enabled. Positive answers with a usable TTL are
-        stored (counted as the ``cached`` outcome); every other result is counted by
-        reason in the uncacheable detail table (attributed to ``client``) and the
-        hourly cache-outcome series so a low cache-hit rate can be diagnosed.
+        stored; NXDOMAIN/NODATA answers are negatively cached from their SOA TTL
+        (RFC 2308) when the response carries one. Anything stored counts as the
+        ``cached`` outcome; every other result is counted by reason in the uncacheable
+        detail table (attributed to ``client``) and the hourly cache-outcome series so
+        a low cache-hit rate can be diagnosed.
         """
         rcode = reply.header.rcode
         if rcode == RCODE.NXDOMAIN:
-            self._skip_cache(client, name, qtype, OUTCOME_NXDOMAIN, None)
+            if not self._cache_negative(key, reply, settings):
+                self._skip_cache(client, name, qtype, OUTCOME_NXDOMAIN, None)
             return
         if rcode != RCODE.NOERROR:
             self._skip_cache(client, name, qtype, OUTCOME_ERROR, None)
             return
         if not reply.rr:
-            self._skip_cache(client, name, qtype, OUTCOME_NODATA, None)
+            if not self._cache_negative(key, reply, settings):
+                self._skip_cache(client, name, qtype, OUTCOME_NODATA, None)
             return
         raw_ttl = min(int(record.ttl) for record in reply.rr)
         ttl = self._compute_ttl(reply, settings)
@@ -373,6 +392,20 @@ class DnsResolver:
             self._outcomes.add(OUTCOME_CACHED)
             return
         self._skip_cache(client, name, qtype, OUTCOME_ZERO_TTL, raw_ttl)
+
+    def _cache_negative(self, key: str, reply: DNSRecord, settings: RuntimeSettings) -> bool:
+        """Negatively cache an NXDOMAIN/NODATA answer from its authority SOA (RFC 2308).
+
+        Returns ``True`` when stored. A response without an SOA (no bound on the
+        negative lifetime) or whose clamped TTL is zero is left uncached so the caller
+        can tally it by reason instead.
+        """
+        ttl = _negative_ttl(reply, settings)
+        if ttl is None or ttl <= 0:
+            return False
+        self._cache.set(key, reply.pack(), ttl)
+        self._outcomes.add(OUTCOME_CACHED)
+        return True
 
     def _skip_cache(
         self, client: str, name: str, qtype: str, reason: str, ttl: int | None

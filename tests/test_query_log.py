@@ -53,6 +53,23 @@ def test_search_matches_client(temp_config_db: None) -> None:
     assert repo.count_queries(search="192.168") == 1
 
 
+def test_client_filter_matches_exact_ip(temp_config_db: None) -> None:
+    _add_query("10.0.0.5", "a.example")
+    _add_query("10.0.0.50", "b.example")
+    rows = repo.list_queries(client="10.0.0.5")
+    assert [r["domain"] for r in rows] == ["a.example"]
+    assert repo.count_queries(client="10.0.0.5") == 1
+
+
+def test_client_filter_combines_with_search(temp_config_db: None) -> None:
+    _add_query("10.0.0.5", "ads.example.com")
+    _add_query("10.0.0.5", "good.example.org")
+    _add_query("10.0.0.6", "ads.example.net")
+    rows = repo.list_queries(client="10.0.0.5", search="ads")
+    assert [r["domain"] for r in rows] == ["ads.example.com"]
+    assert repo.count_queries(client="10.0.0.5", search="ads") == 1
+
+
 def test_search_is_case_insensitive(temp_config_db: None) -> None:
     _add_query("10.0.0.1", "ADS.Example.com")
     assert len(repo.list_queries(search="ads")) == 1

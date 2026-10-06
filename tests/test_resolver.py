@@ -1,7 +1,7 @@
 from ipaddress import ip_address
 
 import pytest
-from dnslib import QTYPE, RCODE, RR, A, DNSRecord
+from dnslib import QTYPE, RCODE, RR, SOA, A, DNSRecord
 
 from mirenai.domain.cache import TTLCache
 from mirenai.domain.cacheoutcome import CacheOutcomeAgg, CacheOutcomeBuffer
@@ -161,6 +161,89 @@ def test_uncacheable_records_nodata(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured[0].last_ttl is None
 
 
+def _soa_auth() -> RR:
+    """An authority-section SOA with a 300s MINIMUM, as resolvers return for negatives."""
+    return RR(
+        "example.com",
+        QTYPE.SOA,
+        ttl=1800,
+        rdata=SOA(
+            "ns.example.com",
+            "hostmaster.example.com",
+            (2021010101, 7200, 3600, 1209600, 300),
+        ),
+    )
+
+
+def test_negative_cache_nodata_with_soa(monkeypatch: pytest.MonkeyPatch) -> None:
+    outcomes_captured: list[CacheOutcomeAgg] = []
+    outcomes = CacheOutcomeBuffer(flush=outcomes_captured.extend, flush_seconds=3600)
+    uncached_captured: list[UncacheableAgg] = []
+    uncached = UncacheableBuffer(flush=uncached_captured.extend, flush_seconds=3600)
+    reply = DNSRecord.question("apple.example", "HTTPS").reply()  # NOERROR, no answers
+    reply.add_auth(_soa_auth())
+    reply_bytes = reply.pack()
+    sends = 0
+
+    def fake_send(self: DNSRecord, *a: object, **k: object) -> bytes:
+        nonlocal sends
+        sends += 1
+        return reply_bytes
+
+    monkeypatch.setattr(DNSRecord, "send", fake_send)
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        upstreams=[UpstreamServer("1.1.1.1", 53, "udp", 100)],
+        outcomes=outcomes,
+        uncached=uncached,
+    )
+
+    first = resolver.handle(DNSRecord.question("apple.example", "HTTPS"), "10.0.0.1")
+    assert first.header.rcode == RCODE.NOERROR
+    assert first.rr == []
+
+    # Second identical query is served from the negative cache, no second upstream send.
+    resolver.handle(DNSRecord.question("apple.example", "HTTPS"), "10.0.0.1")
+    assert sends == 1
+
+    outcomes.flush()
+    uncached.flush()
+    assert [row.reason for row in outcomes_captured] == ["cached"]
+    assert uncached_captured == []
+
+
+def test_negative_cache_nxdomain_with_soa(monkeypatch: pytest.MonkeyPatch) -> None:
+    outcomes_captured: list[CacheOutcomeAgg] = []
+    outcomes = CacheOutcomeBuffer(flush=outcomes_captured.extend, flush_seconds=3600)
+    reply = DNSRecord.question("gone.example", "A").reply()
+    reply.header.rcode = RCODE.NXDOMAIN
+    reply.add_auth(_soa_auth())
+    reply_bytes = reply.pack()
+    sends = 0
+
+    def fake_send(self: DNSRecord, *a: object, **k: object) -> bytes:
+        nonlocal sends
+        sends += 1
+        return reply_bytes
+
+    monkeypatch.setattr(DNSRecord, "send", fake_send)
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        upstreams=[UpstreamServer("1.1.1.1", 53, "udp", 100)],
+        outcomes=outcomes,
+    )
+
+    first = resolver.handle(DNSRecord.question("gone.example", "A"), "10.0.0.1")
+    assert first.header.rcode == RCODE.NXDOMAIN
+
+    served = resolver.handle(DNSRecord.question("gone.example", "A"), "10.0.0.1")
+    assert served.header.rcode == RCODE.NXDOMAIN
+    assert sends == 1
+
+    outcomes.flush()
+    assert [row.reason for row in outcomes_captured] == ["cached"]
+
+
 def test_uncacheable_records_zero_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: list[UncacheableAgg] = []
     uncached = UncacheableBuffer(flush=captured.extend, flush_seconds=3600)
@@ -200,6 +283,40 @@ def test_cacheable_answer_is_not_recorded(monkeypatch: pytest.MonkeyPatch) -> No
     _forwarding_resolver(uncached).handle(DNSRecord.question("ok.example", "A"), "10.0.0.1")
     uncached.flush()
     assert captured == []
+
+
+def test_https_record_is_forwarded_and_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[CacheOutcomeAgg] = []
+    outcomes = CacheOutcomeBuffer(flush=captured.extend, flush_seconds=3600)
+    reply = DNSRecord.question("cloudflare.com", "HTTPS").reply()
+    for rr in RR.fromZone("cloudflare.com. 300 IN HTTPS 1 . alpn=h3,h2 ipv4hint=104.16.132.229"):
+        reply.add_answer(rr)
+    reply_bytes = reply.pack()
+    sends = 0
+
+    def fake_send(self: DNSRecord, *a: object, **k: object) -> bytes:
+        nonlocal sends
+        sends += 1
+        return reply_bytes
+
+    monkeypatch.setattr(DNSRecord, "send", fake_send)
+    resolver = _make_resolver(
+        [PolicyRule("*", "*", "forward")],
+        upstreams=[UpstreamServer("1.1.1.1", 53, "udp", 100)],
+        outcomes=outcomes,
+    )
+
+    first = resolver.handle(DNSRecord.question("cloudflare.com", "HTTPS"), "10.0.0.1")
+    assert first.q.qtype == QTYPE.HTTPS
+    assert [rr.rtype for rr in first.rr] == [QTYPE.HTTPS]
+
+    # Second identical query is served from cache without another upstream send.
+    second = resolver.handle(DNSRecord.question("cloudflare.com", "HTTPS"), "10.0.0.1")
+    assert [rr.rtype for rr in second.rr] == [QTYPE.HTTPS]
+    assert sends == 1
+
+    outcomes.flush()
+    assert [row.reason for row in captured] == ["cached"]
 
 
 def test_outcome_records_cached(monkeypatch: pytest.MonkeyPatch) -> None:

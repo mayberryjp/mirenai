@@ -17,13 +17,18 @@ def register_query_routes(app: Bottle) -> None:
         if err is not None:
             return err
         search = (request.query.get("search") or "").strip() or None
+        client = (request.query.get("client") or "").strip() or None
         if not paginate:
-            rows = repo.list_queries(search=search)
+            rows = repo.list_queries(search=search, client=client)
             blocklists_repo.annotate_blocked(rows)
             return {"status": "ok", "queries": rows, "total": len(rows)}
-        rows = repo.list_queries(limit=limit, offset=offset, search=search)
+        rows = repo.list_queries(limit=limit, offset=offset, search=search, client=client)
         blocklists_repo.annotate_blocked(rows)
-        return {"status": "ok", "queries": rows, "total": repo.count_queries(search=search)}
+        return {
+            "status": "ok",
+            "queries": rows,
+            "total": repo.count_queries(search=search, client=client),
+        }
 
     @app.get("/queries/top-blocked")
     def top_blocked_domains() -> dict[str, Any]:

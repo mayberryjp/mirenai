@@ -75,12 +75,24 @@ def _search_filter(search: str | None) -> ColumnElement[bool] | None:
     )
 
 
+def _filters(search: str | None, client: str | None) -> list[ColumnElement[bool]]:
+    conditions: list[ColumnElement[bool]] = []
+    if client:
+        conditions.append(QueryLog.client == client)
+    search_condition = _search_filter(search)
+    if search_condition is not None:
+        conditions.append(search_condition)
+    return conditions
+
+
 def list_queries(
-    limit: int | None = None, offset: int = 0, search: str | None = None
+    limit: int | None = None,
+    offset: int = 0,
+    search: str | None = None,
+    client: str | None = None,
 ) -> list[dict[str, Any]]:
     stmt = select(QueryLog).order_by(QueryLog.last_seen.desc(), QueryLog.id)
-    condition = _search_filter(search)
-    if condition is not None:
+    for condition in _filters(search, client):
         stmt = stmt.where(condition)
     if limit is not None:
         stmt = stmt.limit(limit).offset(offset)
@@ -89,10 +101,9 @@ def list_queries(
         return [_to_dict(row) for row in rows]
 
 
-def count_queries(search: str | None = None) -> int:
+def count_queries(search: str | None = None, client: str | None = None) -> int:
     stmt = select(QueryLog.id)
-    condition = _search_filter(search)
-    if condition is not None:
+    for condition in _filters(search, client):
         stmt = stmt.where(condition)
     with session_scope() as session:
         return len(session.scalars(stmt).all())

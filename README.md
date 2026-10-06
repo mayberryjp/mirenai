@@ -167,7 +167,7 @@ per-endpoint shapes.
 | Upstreams    | `GET/POST /upstreams`, `PUT/DELETE /upstreams/{id}`, `POST /upstreams/{id}/check` (RTT probe)         |
 | Blocklists   | `GET/POST /blocklists`, `GET/PUT/DELETE /blocklists/{id}`, `GET /blocklists/{id}/domains`, `GET /blocklists/search`, `POST /blocklists/{id}/refresh`, `GET/POST /blocklists/overrides`, `DELETE /blocklists/overrides/{id}` |
 | Local zones  | `GET/POST /local-zones`, `GET/PUT/DELETE /local-zones/{id}`, `GET /local-zones/{id}/records`, `POST /local-zones/{id}/refresh`, `GET /local-records` |
-| Query log    | `GET /queries` (paginated, `?search=` by client or domain), `DELETE /queries`                        |
+| Query log    | `GET /queries` (paginated, `?search=` by client or domain, `?client=` exact IP), `DELETE /queries`   |
 | Recent queries | `GET /clients/{ip}/queries` — live per-client request/response events (`?seconds=`, `?limit=`)     |
 | Stats        | `GET /stats`, `GET /stats/site`, `GET /stats/cache-outcomes`, `GET /stats/new-domains`, `GET /stats/new-domains/recent`, `GET /stats/runtime`, `GET /stats/upstreams` |
 | Requests     | `GET /requests` — top `(client, domain, qtype)` objects                                              |
@@ -213,12 +213,14 @@ repository and talks to the API.
 A few specifics worth knowing:
 
 - **Caching.** Forwarded answers are cached by `name|qtype|qclass`. TTL comes from
-  the response (SOA minimum for negative answers), clamped to `[cache_min_ttl,
-  cache_max_ttl]`, and counts down on each hit. The cache is process-local to the
-  DNS server, so `POST /cache/flush` records a request the server honours on its
-  next refresh tick, and its size shows up in `GET /stats/runtime`. Answers that
-  can't be cached (NXDOMAIN, NODATA, zero-TTL, upstream failures) are tallied by
-  reason at `GET /cache/uncacheable` (per-domain detail) and bucketed hourly at
+  the response — the answer's own TTL for positive replies, or the SOA MINIMUM for
+  negative ones (NXDOMAIN/NODATA are negatively cached per RFC 2308) — clamped to
+  `[cache_min_ttl, cache_max_ttl]`, and counts down on each hit. The cache is
+  process-local to the DNS server, so `POST /cache/flush` records a request the server
+  honours on its next refresh tick, and its size shows up in `GET /stats/runtime`.
+  Answers that still can't be cached — a negative reply carrying no SOA, another error
+  rcode, a zero TTL, or an upstream failure — are tallied by reason at
+  `GET /cache/uncacheable` (per-domain detail) and bucketed hourly at
   `GET /stats/cache-outcomes` (a forwarded-reason chart) to help diagnose a low
   cache-hit rate.
 - **Blocklists.** Hosts format (`0.0.0.0 ads.example.com`) and domain-only lines
