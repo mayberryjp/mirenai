@@ -233,6 +233,7 @@ def init_db() -> None:
     _ensure_hosts_mac_column()
     _ensure_hosts_excluded_column()
     _ensure_hosts_flag_new_domains_column()
+    _ensure_blocklist_domain_first_seen_column()
 
     from mirenai.repository.blocklists import ensure_default_blocklist
     from mirenai.repository.upstreams import ensure_default_upstream
@@ -375,4 +376,33 @@ def _ensure_hosts_flag_new_domains_column() -> None:
         if columns and "flag_new_domains" not in columns:
             conn.execute(
                 text("ALTER TABLE hosts ADD COLUMN flag_new_domains BOOLEAN NOT NULL DEFAULT 1")
+            )
+
+
+def _ensure_blocklist_domain_first_seen_column() -> None:
+    """Add ``blocklist_domains.first_seen`` to a blocklist database created before it.
+
+    ``create_all`` never alters existing tables and this project has no migration
+    tool, so a pre-existing ``blocklist_domains`` table needs a one-off ``ALTER``.
+    SQLite forbids a non-constant default (e.g. ``datetime('now')``) on ``ADD
+    COLUMN``, so the column is added nullable and existing rows are backfilled to
+    now; ``replace_domains`` always supplies ``first_seen`` on insert. The matching
+    index is created separately. Idempotent and a no-op on fresh databases (where
+    ``create_all`` already added both).
+    """
+    with get_blocklist_engine().begin() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(blocklist_domains)"))}
+        if columns and "first_seen" not in columns:
+            conn.execute(text("ALTER TABLE blocklist_domains ADD COLUMN first_seen DATETIME"))
+            conn.execute(
+                text(
+                    "UPDATE blocklist_domains SET first_seen = datetime('now', 'localtime') "
+                    "WHERE first_seen IS NULL"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_blocklist_domains_first_seen "
+                    "ON blocklist_domains (first_seen)"
+                )
             )

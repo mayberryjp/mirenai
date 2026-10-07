@@ -3,9 +3,10 @@ from typing import Any
 from bottle import Bottle, request, response
 from sqlalchemy.exc import IntegrityError
 
-from mirenai.api.errors import error, parse_body, read_pagination
+from mirenai.api.errors import error, parse_body, read_int_query, read_pagination
 from mirenai.api.schemas import BlocklistCreate, BlocklistOverrideCreate, BlocklistUpdate
 from mirenai.repository import blocklist_overrides as override_repo
+from mirenai.repository import blocklist_size as size_repo
 from mirenai.repository import blocklists as repo
 from mirenai.workers.blocklist_downloader import BlocklistDownloadError, refresh_blocklist
 
@@ -35,6 +36,36 @@ def register_blocklist_routes(app: Bottle) -> None:
             return {"status": "ok", "matches": matches, "total": len(matches)}
         matches = repo.search_domains(query, limit=limit, offset=offset)
         return {"status": "ok", "matches": matches, "total": repo.count_domain_matches(query)}
+
+    @app.get("/blocklists/size-history")
+    def blocklist_size_history() -> dict[str, Any]:
+        paginate, limit, offset, err = read_pagination()
+        if err is not None:
+            return err
+        hours, err = read_int_query("hours")
+        if err is not None:
+            return err
+        if not paginate:
+            rows = size_repo.list_blocklist_size(hours=hours)
+            return {"status": "ok", "size_history": rows, "total": len(rows)}
+        rows = size_repo.list_blocklist_size(limit=limit, offset=offset, hours=hours)
+        total = size_repo.count_blocklist_size(hours=hours)
+        return {"status": "ok", "size_history": rows, "total": total}
+
+    @app.get("/blocklists/recent")
+    def recent_blocklist_domains() -> dict[str, Any]:
+        paginate, limit, offset, err = read_pagination()
+        if err is not None:
+            return err
+        blocklist_id, err = read_int_query("blocklist_id")
+        if err is not None:
+            return err
+        if not paginate:
+            rows = repo.list_new_domains(blocklist_id=blocklist_id)
+            return {"status": "ok", "domains": rows, "total": len(rows)}
+        rows = repo.list_new_domains(limit=limit, offset=offset, blocklist_id=blocklist_id)
+        total = repo.count_new_domains(blocklist_id=blocklist_id)
+        return {"status": "ok", "domains": rows, "total": total}
 
     @app.get("/blocklists/overrides")
     def list_blocklist_overrides() -> dict[str, Any]:

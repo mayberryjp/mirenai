@@ -172,7 +172,7 @@ per-endpoint shapes.
 | Client modes | `GET/PUT /clients/{ip}/mode` — allow-all / block-all shortcut                                         |
 | Hosts        | `GET /hosts`, `GET/PUT/DELETE /hosts/{id}`, `POST /hosts/{id}/sync` (Sando)                           |
 | Upstreams    | `GET/POST /upstreams`, `PUT/DELETE /upstreams/{id}`, `POST /upstreams/{id}/check` (RTT probe)         |
-| Blocklists   | `GET/POST /blocklists`, `GET/PUT/DELETE /blocklists/{id}`, `GET /blocklists/{id}/domains`, `GET /blocklists/search`, `POST /blocklists/{id}/refresh`, `GET/POST /blocklists/overrides`, `DELETE /blocklists/overrides/{id}` |
+| Blocklists   | `GET/POST /blocklists`, `GET/PUT/DELETE /blocklists/{id}`, `GET /blocklists/{id}/domains`, `GET /blocklists/search`, `GET /blocklists/recent` (newest entries by first-seen), `GET /blocklists/size-history` (hourly size), `POST /blocklists/{id}/refresh`, `GET/POST /blocklists/overrides`, `DELETE /blocklists/overrides/{id}` |
 | Local zones  | `GET/POST /local-zones`, `GET/PUT/DELETE /local-zones/{id}`, `GET /local-zones/{id}/records`, `POST /local-zones/{id}/refresh`, `GET /local-records` |
 | Query log    | `GET /queries` (paginated, `?search=` by client or domain, `?client=` exact IP), `DELETE /queries`   |
 | Recent queries | `GET /clients/{ip}/queries` — live per-client request/response events (`?seconds=`, `?limit=`)     |
@@ -205,8 +205,9 @@ apply without a restart.
   policy, caches forwarded answers, tracks clients, and records stats. Its own
   process.
 - **Blocklist downloader** (`mirenai.workers.blocklist_downloader`) — fetches each
-  enabled blocklist when its interval elapses and stores the domains. Its own
-  process.
+  enabled blocklist when its interval elapses and stores the domains. Also samples
+  the total enabled-blocklist size into an hourly series (retained ~500 hours) for
+  `GET /blocklists/size-history`. Its own process.
 - **Local-zone downloader** (`mirenai.workers.local_zones`) — fetches each enabled
   local zone when its interval elapses and stores its parsed records. Its own
   process.

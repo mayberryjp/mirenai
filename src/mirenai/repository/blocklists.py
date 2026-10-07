@@ -12,7 +12,7 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, func, insert, select
 
 from mirenai.db import blocklist_session_scope, session_scope
 from mirenai.domain.blocklist import domain_suffixes, is_blocked
@@ -100,15 +100,41 @@ def _delete_domains(blocklist_id: int) -> None:
 
 
 def replace_domains(blocklist_id: int, domains: Sequence[str]) -> None:
-    """Atomically swap the stored domains for a blocklist with ``domains``."""
+    """Swap a blocklist's stored domains to ``domains``, preserving ``first_seen``.
+
+    Diffs against the currently stored set so a re-download keeps the original
+    ``first_seen`` for domains that persist, stamps only genuinely new domains with
+    the current time, and deletes domains no longer present. This is what makes the
+    newest-entries feed meaningful; a blind delete-and-reinsert would reset every
+    timestamp on every refresh.
+    """
+    now = datetime.now()
+    desired = set(domains)
     with blocklist_session_scope() as session:
-        session.execute(
-            delete(BlocklistDomain).where(BlocklistDomain.blocklist_id == blocklist_id)
+        existing = set(
+            session.scalars(
+                select(BlocklistDomain.domain).where(
+                    BlocklistDomain.blocklist_id == blocklist_id
+                )
+            ).all()
         )
-        if domains:
+        removed = list(existing - desired)
+        added = list(desired - existing)
+        # Chunk the delete to stay under SQLite's host-parameter cap.
+        for start in range(0, len(removed), _MATCH_CHUNK):
+            chunk = removed[start : start + _MATCH_CHUNK]
+            session.execute(
+                delete(BlocklistDomain)
+                .where(BlocklistDomain.blocklist_id == blocklist_id)
+                .where(BlocklistDomain.domain.in_(chunk))
+            )
+        if added:
             session.execute(
                 insert(BlocklistDomain),
-                [{"blocklist_id": blocklist_id, "domain": domain} for domain in domains],
+                [
+                    {"blocklist_id": blocklist_id, "domain": domain, "first_seen": now}
+                    for domain in added
+                ],
             )
 
 
@@ -128,6 +154,62 @@ def list_domains(
 
 def count_domains(blocklist_id: int) -> int:
     stmt = select(BlocklistDomain.id).where(BlocklistDomain.blocklist_id == blocklist_id)
+    with blocklist_session_scope() as session:
+        return len(session.scalars(stmt).all())
+
+
+def total_enabled_domain_count() -> int:
+    """Total domains across *enabled* blocklists (the sum of each list's count).
+
+    Cheap config-database read used to sample blocklist size over time. Counts a
+    domain once per list it appears on (not de-duplicated across lists).
+    """
+    with session_scope() as session:
+        total = session.execute(
+            select(func.coalesce(func.sum(Blocklist.domain_count), 0)).where(
+                Blocklist.enabled.is_(True)
+            )
+        ).scalar_one()
+    return int(total)
+
+
+def list_new_domains(
+    limit: int | None = None, offset: int = 0, blocklist_id: int | None = None
+) -> list[dict[str, Any]]:
+    """Return stored domains ordered newest-first by ``first_seen``.
+
+    Powers a "recently added blocklist entries" table. Domains live in the
+    blocklist database while blocklist *names* live in the config database, so each
+    row is resolved to its list via a separate ``blocklist_id`` -> name lookup.
+    """
+    stmt = select(
+        BlocklistDomain.blocklist_id, BlocklistDomain.domain, BlocklistDomain.first_seen
+    )
+    if blocklist_id is not None:
+        stmt = stmt.where(BlocklistDomain.blocklist_id == blocklist_id)
+    stmt = stmt.order_by(BlocklistDomain.first_seen.desc(), BlocklistDomain.id.desc())
+    if limit is not None:
+        stmt = stmt.limit(limit).offset(offset)
+    with blocklist_session_scope() as session:
+        rows = session.execute(stmt).all()
+    if not rows:
+        return []
+    names = _blocklist_names({bid for bid, _, _ in rows})
+    return [
+        {
+            "domain": dom,
+            "blocklist_id": bid,
+            "blocklist_name": names.get(bid),
+            "first_seen": seen.isoformat(),
+        }
+        for bid, dom, seen in rows
+    ]
+
+
+def count_new_domains(blocklist_id: int | None = None) -> int:
+    stmt = select(BlocklistDomain.id)
+    if blocklist_id is not None:
+        stmt = stmt.where(BlocklistDomain.blocklist_id == blocklist_id)
     with blocklist_session_scope() as session:
         return len(session.scalars(stmt).all())
 

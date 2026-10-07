@@ -82,7 +82,7 @@ All errors use the envelope above. Map on `code` (stable string), not on the hum
 
 ## 5. Pagination
 
-List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/domains`, `/blocklists/search`, `/queries`, `/hosts`, `/stats`, `/stats/site`, `/stats/cache-outcomes`, `/stats/upstreams`, `/requests`, `/trusted-networks`) accept **optional** `limit` and `offset` query parameters.
+List endpoints (`/policies`, `/upstreams`, `/blocklists`, `/blocklists/{id}/domains`, `/blocklists/search`, `/blocklists/recent`, `/blocklists/size-history`, `/queries`, `/hosts`, `/stats`, `/stats/site`, `/stats/cache-outcomes`, `/stats/upstreams`, `/requests`, `/trusted-networks`) accept **optional** `limit` and `offset` query parameters.
 
 - **Neither supplied →** all rows are returned; `total` equals the number of rows in the response.
 - **Either supplied →** results are paginated; `total` is the **full count** across all rows (not the length of this page).
@@ -301,6 +301,48 @@ Query params: `q` (**required** — the search string) plus optional `limit`/`of
 Each match carries the blocked `domain`, the `blocklist_id` it belongs to, and that list's `blocklist_name` (`null` if the config row is gone). Ordering: alphabetical by domain. `total` is the full (filtered) match count. Errors: `422 validation_error` if `q` is missing or blank.
 
 > A substring lookup scans the whole domain table (a leading-wildcard `LIKE` can't use the index), so it can be slow on multi-million-entry lists. Paginate and debounce in the UI.
+
+#### `GET /blocklists/recent`
+The newest stored domains across all blocklists, for a "recently added entries"
+table. Ordered by `first_seen` **descending** (newest first), then `id`. Supports
+pagination and an optional `blocklist_id` filter (restrict to one list).
+```json
+{ "status": "ok", "domains": [ { "domain": "ads.example.com", "blocklist_id": 3, "blocklist_name": "HaGeZi Multi PRO", "first_seen": "2026-10-06T13:40:00" } ], "total": 1 }
+```
+
+**Recent-entry object:**
+| field            | type              | notes                                                        |
+| ---------------- | ----------------- | ------------------------------------------------------------ |
+| `domain`         | string            | the blocked domain                                           |
+| `blocklist_id`   | int               | the list it is stored on                                     |
+| `blocklist_name` | string \| null    | that list's name (`null` if the config row is gone)          |
+| `first_seen`     | string (datetime) | local-time ISO timestamp this domain first appeared on the list |
+
+`first_seen` is **preserved across refreshes** — a re-download only stamps domains
+that are genuinely new to the list, so a persisting entry keeps its original time.
+The **first** download of a list (and the first refresh after upgrading, when the
+column is backfilled) stamps every current domain at once, so they all share one
+`first_seen`. Query param: optional `blocklist_id` (int) plus `limit`/`offset`.
+
+#### `GET /blocklists/size-history`
+Hourly samples of total blocklist size, for charting growth over time. Returns one
+point per wall-clock hour, ordered by `hour_start` **descending**.
+```json
+{ "status": "ok", "size_history": [ { "hour_start": "2026-10-06T13:00:00", "domains": 1543210 } ], "total": 1 }
+```
+
+**Size-sample object:**
+| field        | type              | notes                                                        |
+| ------------ | ----------------- | ------------------------------------------------------------ |
+| `hour_start` | string (datetime) | start of the wall-clock hour (local time)                    |
+| `domains`    | int               | total domains across **enabled** blocklists at that sample   |
+
+`domains` is the sum of each enabled list's `domain_count` (a domain on two lists
+counts twice; disabled lists are excluded). It is a **gauge**: the latest sample
+within an hour overwrites earlier ones, and only ~**500 hours** are retained
+(older buckets are purged). Hours in which the downloader wasn't running have **no
+row** (the series is not zero-filled — a gap means "unknown", not "zero"). Query
+param: optional `hours` (int, window back from now) plus `limit`/`offset`.
 
 #### `POST /blocklists/{id}/refresh`
 Downloads the source URL immediately, parses it, and replaces the stored domains. Body is ignored. This call is **synchronous** and may take seconds for large lists.

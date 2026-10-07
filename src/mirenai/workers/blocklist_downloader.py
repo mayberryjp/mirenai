@@ -21,6 +21,7 @@ from mirenai.config import settings
 from mirenai.domain.blocklist import apply_overrides, detect_format, parse_blocklist
 from mirenai.logging import configure_logging, get_logger
 from mirenai.repository import blocklist_overrides as override_repo
+from mirenai.repository import blocklist_size as size_repo
 from mirenai.repository import blocklists as repo
 
 log = get_logger("blocklist.downloader")
@@ -108,6 +109,16 @@ def run_due_downloads() -> None:
             log.warning("blocklist '%s' download failed: %s", row["name"], exc)
 
 
+def sample_blocklist_size() -> None:
+    """Record the current total enabled-blocklist size into the current hour bucket.
+
+    Sampled every poll independent of download cadence so the series stays
+    continuous even when no list is due; the hourly bucket is a gauge, so repeated
+    samples within an hour just overwrite it.
+    """
+    size_repo.record_blocklist_size(repo.total_enabled_domain_count())
+
+
 def _wait_for_db() -> None:
     while True:
         try:
@@ -130,6 +141,10 @@ def main() -> None:
                 run_due_downloads()
             except Exception:
                 log.exception("blocklist refresh cycle failed")
+            try:
+                sample_blocklist_size()
+            except Exception:
+                log.exception("blocklist size sample failed")
             stop.wait(_POLL_SECONDS)
     except KeyboardInterrupt:
         log.info("shutting down blocklist downloader")

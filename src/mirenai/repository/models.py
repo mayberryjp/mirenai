@@ -367,6 +367,24 @@ class ForeignClient(StatsBase):
     )
 
 
+class BlocklistSizeHourly(StatsBase):
+    """Hourly sample of the total enabled-blocklist domain count (a gauge).
+
+    One row per wall-clock hour; the latest sample within an hour overwrites the
+    earlier one (unlike the additive cache-outcome series). Buckets older than the
+    retention window are purged on write. Kept in its own table so its much coarser
+    scale and longer retention don't distort the forwarded cache-outcome chart.
+    """
+
+    __tablename__ = "blocklist_size_hourly"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    hour_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, unique=True, index=True
+    )
+    domains: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+
 class Blocklist(ConfigBase):
     """Configuration for a downloadable DNS blocklist (name, source URL, cadence).
 
@@ -483,6 +501,9 @@ class BlocklistDomain(BlocklistBase):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     blocklist_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW, index=True
+    )
 
 
 class Host(HostsBase):
