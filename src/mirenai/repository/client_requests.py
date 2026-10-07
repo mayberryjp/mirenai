@@ -11,8 +11,9 @@ from collections.abc import Collection
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, tuple_
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import Session
 
 from mirenai.db import session_scope
 from mirenai.domain.clientrequests import ClientRequestAgg
@@ -147,6 +148,28 @@ def list_new_domain_counts(client: str | None = None) -> list[dict[str, Any]]:
         ]
 
 
+def _last_actions_for(
+    session: Session, pairs: list[tuple[str, str]]
+) -> dict[tuple[str, str], str | None]:
+    """Map each ``(client, domain)`` to the query log's newest ``last_action``.
+
+    ``query_log`` lives in a separate database from ``client_requests``, so this is
+    a second query (SQLite can't join across files) merged in Python. One row per
+    pair wins: the newest by ``last_seen`` then ``id``, matching the former subquery.
+    """
+    if not pairs:
+        return {}
+    stmt = (
+        select(QueryLog.client, QueryLog.domain, QueryLog.last_action)
+        .where(tuple_(QueryLog.client, QueryLog.domain).in_(pairs))
+        .order_by(QueryLog.last_seen.desc(), QueryLog.id.desc())
+    )
+    actions: dict[tuple[str, str], str | None] = {}
+    for client, domain, last_action in session.execute(stmt):
+        actions.setdefault((client, domain), last_action)
+    return actions
+
+
 def list_recent_new_domains(
     limit: int = 100, exclude_clients: Collection[str] | None = None
 ) -> list[dict[str, Any]]:
@@ -161,21 +184,10 @@ def list_recent_new_domains(
     (used to drop clients opted out of new-domain monitoring).
     """
     first_seen = func.min(ClientRequest.first_seen)
-    last_action = (
-        select(QueryLog.last_action)
-        .where(
-            QueryLog.client == ClientRequest.client,
-            QueryLog.domain == ClientRequest.domain,
-        )
-        .order_by(QueryLog.last_seen.desc(), QueryLog.id.desc())
-        .limit(1)
-        .scalar_subquery()
-    )
     stmt = select(
         ClientRequest.client,
         ClientRequest.domain,
         first_seen.label("first_seen"),
-        last_action.label("last_action"),
     )
     if exclude_clients:
         stmt = stmt.where(ClientRequest.client.not_in(exclude_clients))
@@ -186,12 +198,13 @@ def list_recent_new_domains(
     )
     with session_scope() as session:
         rows = session.execute(stmt).all()
+        actions = _last_actions_for(session, [(row.client, row.domain) for row in rows])
         return [
             {
                 "client": row.client,
                 "domain": row.domain,
                 "first_seen": row.first_seen.isoformat(),
-                "last_action": row.last_action,
+                "last_action": actions.get((row.client, row.domain)),
             }
             for row in rows
         ]

@@ -12,12 +12,28 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="MIRENAI_", extra="ignore")
 
-    database_url: str = Field("sqlite:////data/mirenai.db", validation_alias="DATABASE_URL")
+    config_database_url: str = Field(
+        "sqlite:////data/config.db", validation_alias="CONFIG_DATABASE_URL"
+    )
+    stats_database_url: str = Field(
+        "sqlite:////data/stats.db", validation_alias="STATS_DATABASE_URL"
+    )
+    cache_database_url: str = Field(
+        "sqlite:////data/cache.db", validation_alias="CACHE_DATABASE_URL"
+    )
+    querylog_database_url: str = Field(
+        "sqlite:////data/querylogs.db", validation_alias="QUERYLOG_DATABASE_URL"
+    )
     blocklist_database_url: str = Field(
         "sqlite:////data/blocklist.db", validation_alias="BLOCKLIST_DATABASE_URL"
     )
     localhosts_database_url: str = Field(
         "sqlite:////data/localhosts.db", validation_alias="LOCALHOSTS_DATABASE_URL"
+    )
+
+    # Source for the one-time split migration: the pre-split single database.
+    legacy_database_url: str = Field(
+        "sqlite:////data/mirenai.db", validation_alias="DATABASE_URL"
     )
 
     api_listen_address: str = Field("0.0.0.0", validation_alias="API_LISTEN_ADDRESS")  # nosec B104

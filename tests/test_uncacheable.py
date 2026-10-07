@@ -6,7 +6,7 @@ from webtest import TestApp
 
 from mirenai import config, db
 from mirenai.api.app import create_app
-from mirenai.db import Base, session_scope
+from mirenai.db import session_scope
 from mirenai.domain.uncacheable import UncacheableAgg, UncacheableBuffer
 from mirenai.repository import uncacheable as repo
 from mirenai.repository.models import UncacheableResponse
@@ -14,12 +14,11 @@ from mirenai.repository.models import UncacheableResponse
 
 @pytest.fixture()
 def temp_config_db(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    db_path = tmp_path / "mirenai.db"
-    monkeypatch.setattr(config.settings, "database_url", f"sqlite:///{db_path}")
-    # Force the cached engine/session factory to rebuild against the temp DB.
-    monkeypatch.setattr(db, "_engine", None)
-    monkeypatch.setattr(db, "_session_factory", None)
-    Base.metadata.create_all(db.get_engine())
+    for _name in ("config", "stats", "cache", "querylog"):
+        monkeypatch.setattr(
+            config.settings, f"{_name}_database_url", f"sqlite:///{tmp_path / f'{_name}.db'}"
+        )
+    db.create_all_schemas()
     yield
 
 
@@ -208,3 +207,96 @@ def test_uncacheable_route_filters_by_client(temp_config_db: None) -> None:
     assert resp.status_code == 200
     assert resp.json["total"] == 1
     assert resp.json["uncacheable"][0]["domain"] == "b.example"
+
+
+# --- delete ---------------------------------------------------------------
+
+
+def test_delete_uncacheable_by_id(temp_config_db: None) -> None:
+    repo.record_uncacheable([UncacheableAgg("10.0.0.1", "a.example", "A", "nxdomain", None, 4)])
+    entry_id = repo.list_uncacheable()[0]["id"]
+    assert repo.delete_uncacheable(entry_id) is True
+    assert repo.count_uncacheable() == 0
+    # Deleting a second time (or an unknown id) reports nothing removed.
+    assert repo.delete_uncacheable(entry_id) is False
+
+
+def test_delete_all_uncacheable(temp_config_db: None) -> None:
+    repo.record_uncacheable(
+        [
+            UncacheableAgg("10.0.0.1", "a.example", "A", "nxdomain", None, 1),
+            UncacheableAgg("10.0.0.2", "b.example", "A", "nodata", None, 1),
+        ]
+    )
+    assert repo.delete_all_uncacheable() == 2
+    assert repo.count_uncacheable() == 0
+    # Clearing an already-empty table removes nothing.
+    assert repo.delete_all_uncacheable() == 0
+
+
+def test_delete_all_uncacheable_filters_by_reason(temp_config_db: None) -> None:
+    repo.record_uncacheable(
+        [
+            UncacheableAgg("10.0.0.1", "a.example", "A", "nxdomain", None, 1),
+            UncacheableAgg("10.0.0.1", "b.example", "A", "nodata", None, 1),
+        ]
+    )
+    assert repo.delete_all_uncacheable(reason="nxdomain") == 1
+    assert {row["reason"] for row in repo.list_uncacheable()} == {"nodata"}
+
+
+def test_delete_all_uncacheable_filters_by_client(temp_config_db: None) -> None:
+    repo.record_uncacheable(
+        [
+            UncacheableAgg("10.0.0.1", "a.example", "A", "nxdomain", None, 1),
+            UncacheableAgg("10.0.0.2", "b.example", "A", "nxdomain", None, 1),
+        ]
+    )
+    assert repo.delete_all_uncacheable(client="10.0.0.1") == 1
+    assert {row["client"] for row in repo.list_uncacheable()} == {"10.0.0.2"}
+
+
+def test_delete_uncacheable_route(temp_config_db: None) -> None:
+    repo.record_uncacheable([UncacheableAgg("10.0.0.1", "a.example", "A", "nxdomain", None, 4)])
+    entry_id = repo.list_uncacheable()[0]["id"]
+    app = TestApp(create_app())
+    resp = app.delete(f"/cache/uncacheable/{entry_id}")
+    assert resp.status_code == 200
+    assert resp.json == {"status": "ok", "deleted": entry_id}
+    assert repo.count_uncacheable() == 0
+
+
+def test_delete_uncacheable_route_not_found(temp_config_db: None) -> None:
+    app = TestApp(create_app())
+    resp = app.delete("/cache/uncacheable/999", expect_errors=True)
+    assert resp.status_code == 404
+    assert resp.json["status"] == "error"
+    assert resp.json["code"] == "not_found"
+
+
+def test_clear_uncacheable_route(temp_config_db: None) -> None:
+    repo.record_uncacheable(
+        [
+            UncacheableAgg("10.0.0.1", "a.example", "A", "nxdomain", None, 1),
+            UncacheableAgg("10.0.0.2", "b.example", "A", "nodata", None, 1),
+        ]
+    )
+    app = TestApp(create_app())
+    resp = app.delete("/cache/uncacheable")
+    assert resp.status_code == 200
+    assert resp.json == {"status": "ok", "deleted": 2}
+    assert repo.count_uncacheable() == 0
+
+
+def test_clear_uncacheable_route_filters_by_reason(temp_config_db: None) -> None:
+    repo.record_uncacheable(
+        [
+            UncacheableAgg("10.0.0.1", "a.example", "A", "nxdomain", None, 1),
+            UncacheableAgg("10.0.0.1", "b.example", "A", "nodata", None, 1),
+        ]
+    )
+    app = TestApp(create_app())
+    resp = app.delete("/cache/uncacheable?reason=nxdomain")
+    assert resp.status_code == 200
+    assert resp.json == {"status": "ok", "deleted": 1}
+    assert {row["reason"] for row in repo.list_uncacheable()} == {"nodata"}

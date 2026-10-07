@@ -9,9 +9,9 @@ sources can't grow it without bound.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import CursorResult, delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mirenai.db import session_scope
@@ -64,3 +64,20 @@ def list_foreign_clients(limit: int | None = None, offset: int = 0) -> list[dict
 def count_foreign_clients() -> int:
     with session_scope() as session:
         return len(session.scalars(select(ForeignClient.id)).all())
+
+
+def delete_foreign_client(client_id: int) -> bool:
+    with session_scope() as session:
+        row = session.get(ForeignClient, client_id)
+        if row is None:
+            return False
+        session.delete(row)
+        return True
+
+
+def delete_all_foreign_clients() -> int:
+    """Remove every retained foreign-client row. Returns the number deleted."""
+    with session_scope() as session:
+        # Session.execute(DELETE) is typed Result but returns CursorResult at runtime.
+        result = cast(CursorResult[Any], session.execute(delete(ForeignClient)))
+        return result.rowcount or 0

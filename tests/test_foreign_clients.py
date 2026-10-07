@@ -6,7 +6,7 @@ from webtest import TestApp
 
 from mirenai import config, db
 from mirenai.api.app import create_app
-from mirenai.db import Base, session_scope
+from mirenai.db import session_scope
 from mirenai.domain.foreignclients import ForeignClientAgg, ForeignClientBuffer
 from mirenai.repository import foreign_clients as repo
 from mirenai.repository.models import ForeignClient
@@ -14,12 +14,11 @@ from mirenai.repository.models import ForeignClient
 
 @pytest.fixture()
 def temp_config_db(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    db_path = tmp_path / "mirenai.db"
-    monkeypatch.setattr(config.settings, "database_url", f"sqlite:///{db_path}")
-    # Force the cached engine/session factory to rebuild against the temp DB.
-    monkeypatch.setattr(db, "_engine", None)
-    monkeypatch.setattr(db, "_session_factory", None)
-    Base.metadata.create_all(db.get_engine())
+    for _name in ("config", "stats", "cache", "querylog"):
+        monkeypatch.setattr(
+            config.settings, f"{_name}_database_url", f"sqlite:///{tmp_path / f'{_name}.db'}"
+        )
+    db.create_all_schemas()
     yield
 
 
@@ -123,3 +122,51 @@ def test_foreign_clients_route_pagination(temp_config_db: None) -> None:
     resp = app.get("/foreign-clients?limit=2&offset=0")
     assert resp.json["total"] == 3
     assert [row["ip"] for row in resp.json["foreign_clients"]] == ["3.3.3.3", "2.2.2.2"]
+
+
+def test_delete_foreign_client_by_id(temp_config_db: None) -> None:
+    repo.record_foreign_clients([ForeignClientAgg(ip="7.7.7.7", hits=4)])
+    client_id = repo.list_foreign_clients()[0]["id"]
+    assert repo.delete_foreign_client(client_id) is True
+    assert repo.count_foreign_clients() == 0
+    # Deleting a second time (or an unknown id) reports nothing removed.
+    assert repo.delete_foreign_client(client_id) is False
+
+
+def test_delete_all_foreign_clients(temp_config_db: None) -> None:
+    repo.record_foreign_clients(
+        [ForeignClientAgg(ip="1.1.1.1", hits=1), ForeignClientAgg(ip="2.2.2.2", hits=1)]
+    )
+    assert repo.delete_all_foreign_clients() == 2
+    assert repo.count_foreign_clients() == 0
+    # Clearing an already-empty table removes nothing.
+    assert repo.delete_all_foreign_clients() == 0
+
+
+def test_delete_foreign_client_route(temp_config_db: None) -> None:
+    repo.record_foreign_clients([ForeignClientAgg(ip="7.7.7.7", hits=4)])
+    client_id = repo.list_foreign_clients()[0]["id"]
+    app = TestApp(create_app())
+    resp = app.delete(f"/foreign-clients/{client_id}")
+    assert resp.status_code == 200
+    assert resp.json == {"status": "ok", "deleted": client_id}
+    assert repo.count_foreign_clients() == 0
+
+
+def test_delete_foreign_client_route_not_found(temp_config_db: None) -> None:
+    app = TestApp(create_app())
+    resp = app.delete("/foreign-clients/999", expect_errors=True)
+    assert resp.status_code == 404
+    assert resp.json["status"] == "error"
+    assert resp.json["code"] == "not_found"
+
+
+def test_clear_foreign_clients_route(temp_config_db: None) -> None:
+    repo.record_foreign_clients(
+        [ForeignClientAgg(ip="1.1.1.1", hits=1), ForeignClientAgg(ip="2.2.2.2", hits=1)]
+    )
+    app = TestApp(create_app())
+    resp = app.delete("/foreign-clients")
+    assert resp.status_code == 200
+    assert resp.json == {"status": "ok", "deleted": 2}
+    assert repo.count_foreign_clients() == 0

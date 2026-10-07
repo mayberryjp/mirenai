@@ -39,12 +39,16 @@ Keep changes in the right layer:
 
 ## Conventions that bite
 
-- **Three SQLite databases, no migration tool.** Config `mirenai.db` (`Base`), blocklist domains
-  `blocklist.db` (`BlocklistBase`), known clients `localhosts.db` (`HostsBase`). `init_db()`
-  `create_all`s all three. A **new table** is auto-created — nothing else to do. A **new column on
-  an existing table** needs an idempotent `_ensure_*_column()` ALTER helper in
-  [src/mirenai/db.py](src/mirenai/db.py) (mirror the existing ones), because `create_all` never
-  alters existing tables.
+- **Six SQLite databases, no migration tool.** The former `mirenai.db` is split by purpose:
+  `config.db` (`ConfigBase`), `stats.db` (`StatsBase`), `cache.db` (`CacheBase`), `querylogs.db`
+  (`QueryLogBase`), plus blocklist domains `blocklist.db` (`BlocklistBase`) and known clients
+  `localhosts.db` (`HostsBase`). `init_db()` `create_all`s all of them. `session_scope()` spans the
+  four split DBs through a per-table `binds` map, so repositories keep using it unchanged. A **new
+  table** is auto-created — nothing else to do. A **new column on an existing table** needs an
+  idempotent `_ensure_*_column()` ALTER helper in [src/mirenai/db.py](src/mirenai/db.py) targeting
+  that table's `get_*_engine()` (mirror `_ensure_hosts_*`), because `create_all` never alters
+  existing tables. On first start `_migrate_legacy_database()` copies a pre-split `mirenai.db` (the
+  legacy `DATABASE_URL`) into the new files, then renames it aside.
 - **DB-relay for DNS-worker state.** The DNS cache and runtime gauges live in the DNS worker
   *process*; the API is a *separate* process and cannot read or mutate them in memory. Cross-process
   actions go through the DB — e.g. `POST /cache/flush` writes a timestamp the worker polls, and
@@ -67,10 +71,11 @@ Keep changes in the right layer:
 
 ## Testing
 
-- [tests/conftest.py](tests/conftest.py) sets `DATABASE_URL=sqlite://` and exposes a `client`
-  webtest `TestApp` fixture for route tests.
-- DB-backed tests use a `temp_config_db` fixture (temp sqlite file, null out `db._engine` /
-  `db._session_factory`, `create_all`) — copy an existing one, e.g. [tests/test_new_domains.py](tests/test_new_domains.py).
+- [tests/conftest.py](tests/conftest.py) points the six `*_DATABASE_URL` vars at `sqlite://`, resets
+  engines per test via an autouse fixture, and exposes a `client` webtest `TestApp` fixture for
+  route tests.
+- DB-backed tests use a `temp_config_db` fixture (temp sqlite files + `db.create_all_schemas()`; an
+  autouse fixture resets engines per test) — copy an existing one, e.g. [tests/test_new_domains.py](tests/test_new_domains.py).
 - Put tests next to the layer you touch: resolver behavior in `tests/test_resolver.py`, repos and
   routes in their matching `test_*.py`.
 

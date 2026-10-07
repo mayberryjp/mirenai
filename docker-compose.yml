@@ -2,7 +2,10 @@ services:
   mirenai:
     image: mirenai:dev
     environment:
-      DATABASE_URL: sqlite:////data/mirenai.db
+      CONFIG_DATABASE_URL: sqlite:////data/config.db
+      STATS_DATABASE_URL: sqlite:////data/stats.db
+      CACHE_DATABASE_URL: sqlite:////data/cache.db
+      QUERYLOG_DATABASE_URL: sqlite:////data/querylogs.db
       BLOCKLIST_DATABASE_URL: sqlite:////data/blocklist.db
       LOCALHOSTS_DATABASE_URL: sqlite:////data/localhosts.db
       API_LISTEN_ADDRESS: 0.0.0.0

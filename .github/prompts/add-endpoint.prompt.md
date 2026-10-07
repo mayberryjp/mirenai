@@ -19,17 +19,21 @@ substitute for it. Do only what the endpoint needs; don't refactor unrelated cod
 
 2. **Repository (all SQLAlchemy)** — `src/mirenai/repository/*.py`.
    Return **plain dicts/values, never ORM objects** (mirror an existing `_to_dict`). Use the right
-   session scope for the target DB: `session_scope` (config `mirenai.db`), `blocklist_session_scope`
-   (`blocklist.db`), `hosts_session_scope` (`localhosts.db`). For list feeds add both a
+   session scope for the target DB: `session_scope` routes each table to its own database
+   (`config.db` / `stats.db` / `cache.db` / `querylogs.db`) via per-table binds;
+   `blocklist_session_scope` (`blocklist.db`) and `hosts_session_scope` (`localhosts.db`) for those.
+   For list feeds add both a
    `list_*(limit, offset, ...)` and a `count_*()`. Upserts use
    `sqlalchemy.dialects.sqlite.insert(...).on_conflict_do_update(index_elements=[...])`; in bulk
    upserts set `updated_at=func.datetime("now", "localtime")` explicitly (they bypass ORM
    `onupdate`). Datetimes → `.isoformat()` in the dict.
 
 3. **Model / DB (only if new storage)** — [src/mirenai/repository/models.py](../../src/mirenai/repository/models.py)
-   + [src/mirenai/db.py](../../src/mirenai/db.py). A **new table** on the correct Base is auto-created
-   by `init_db()` — nothing else. A **new column on an existing table** needs an idempotent
-   `_ensure_*_column()` ALTER helper in `db.py` (mirror the existing ones) called from `init_db()`.
+   + [src/mirenai/db.py](../../src/mirenai/db.py). A **new table** on the correct base
+   (`ConfigBase` / `StatsBase` / `CacheBase` / `QueryLogBase` / `BlocklistBase` / `HostsBase`) is
+   auto-created by `init_db()` — nothing else. A **new column on an existing table** needs an
+   idempotent `_ensure_*_column()` ALTER helper in `db.py` (mirror `_ensure_hosts_*`, targeting that
+   table's `get_*_engine()`) called from `init_db()`.
    Timestamp columns default to `_LOCAL_NOW = text("(datetime('now', 'localtime'))")` — never
    `func.now()` / `CURRENT_TIMESTAMP`.
    Worker-local state (DNS cache, runtime gauges) is unreachable from the API process — relay it
@@ -56,8 +60,8 @@ substitute for it. Do only what the endpoint needs; don't refactor unrelated cod
 
 7. **Tests** — add to the `test_*.py` matching the layer.
    Pure route tests can use the `client` `TestApp` fixture ([tests/conftest.py](../../tests/conftest.py)).
-   DB-backed tests use a `temp_config_db` fixture (temp sqlite file, null `db._engine` /
-   `db._session_factory`, `create_all`) — copy one from
+   DB-backed tests use a `temp_config_db` fixture (temp sqlite files + `db.create_all_schemas()`;
+   an autouse fixture in conftest resets engines per test) — copy one from
    [tests/test_upstreams.py](../../tests/test_upstreams.py) or
    [tests/test_new_domains.py](../../tests/test_new_domains.py). Use
    `app.get/post(..., status=4xx)` for error cases (webtest raises otherwise).

@@ -138,7 +138,10 @@ database and is edited through the API. All of these are set in
 
 | variable                  | default                         | purpose                                   |
 | ------------------------- | ------------------------------- | ----------------------------------------- |
-| `DATABASE_URL`            | `sqlite:////data/mirenai.db`    | configuration database                    |
+| `CONFIG_DATABASE_URL`     | `sqlite:////data/config.db`     | configuration database (policies, upstreams, blocklists, zones) |
+| `STATS_DATABASE_URL`      | `sqlite:////data/stats.db`      | per-client stats and time-series          |
+| `CACHE_DATABASE_URL`      | `sqlite:////data/cache.db`      | DNS answer-cache mirror                    |
+| `QUERYLOG_DATABASE_URL`   | `sqlite:////data/querylogs.db`  | query log and recent query events         |
 | `BLOCKLIST_DATABASE_URL`  | `sqlite:////data/blocklist.db`  | blocklist-domains database                |
 | `LOCALHOSTS_DATABASE_URL` | `sqlite:////data/localhosts.db` | known-clients database                    |
 | `API_LISTEN_ADDRESS`      | `0.0.0.0`                       | API bind address                          |
@@ -148,6 +151,10 @@ database and is edited through the API. All of these are set in
 | `LOG_LEVEL`               | `INFO`                          | log level                                 |
 | `SANDO_API_URL`           | *(empty)*                       | Sando base URL for name/icon sync; empty disables it |
 | `TZ`                      | `Asia/Tokyo`                    | container time zone (drives stored timestamps) |
+
+> On first start, if a pre-split `/data/mirenai.db` is present (the legacy `DATABASE_URL`, default
+> `sqlite:////data/mirenai.db`), its data is copied into the four databases above and the file is
+> renamed to `mirenai.db.migrated`.
 
 The blocklist domains get their own database so a multi-million-entry list never
 bloats the config file.

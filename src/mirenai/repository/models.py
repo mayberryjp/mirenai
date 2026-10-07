@@ -1,8 +1,9 @@
 """SQLAlchemy ORM models.
 
-Tables are registered on ``Base.metadata`` (see ``mirenai.db``) and created at
-startup with ``create_all``. Timestamps default to ``datetime('now', 'localtime')``
-so SQLite records them in the container's local time zone (``TZ``).
+Tables are registered on their database-specific declarative base (see
+``mirenai.db``) and created at startup with ``create_all``. Timestamps default to
+``datetime('now', 'localtime')`` so SQLite records them in the container's local
+time zone (``TZ``).
 """
 
 from __future__ import annotations
@@ -23,13 +24,20 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from mirenai.db import Base, BlocklistBase, HostsBase
+from mirenai.db import (
+    BlocklistBase,
+    CacheBase,
+    ConfigBase,
+    HostsBase,
+    QueryLogBase,
+    StatsBase,
+)
 
 # datetime('now','localtime') resolves against the container's TZ env var.
 _LOCAL_NOW = text("(datetime('now', 'localtime'))")
 
 
-class Policy(Base):
+class Policy(ConfigBase):
     __tablename__ = "policies"
     __table_args__ = (UniqueConstraint("client", "domain", name="uq_policies_client_domain"),)
 
@@ -49,7 +57,7 @@ class Policy(Base):
     )
 
 
-class Upstream(Base):
+class Upstream(ConfigBase):
     __tablename__ = "upstreams"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -67,7 +75,7 @@ class Upstream(Base):
     )
 
 
-class TrustedNetwork(Base):
+class TrustedNetwork(ConfigBase):
     """A source subnet (CIDR) permitted to query the resolver.
 
     When any rows exist the DNS server answers only clients whose address falls
@@ -88,7 +96,7 @@ class TrustedNetwork(Base):
     )
 
 
-class QueryLog(Base):
+class QueryLog(QueryLogBase):
     __tablename__ = "query_log"
     __table_args__ = (
         UniqueConstraint("client", "domain", "qtype", name="uq_query_log_client_domain_qtype"),
@@ -109,7 +117,7 @@ class QueryLog(Base):
     )
 
 
-class ClientQueryEvent(Base):
+class ClientQueryEvent(QueryLogBase):
     """Individual DNS query/response events for a client, kept for a short window.
 
     Unlike :class:`QueryLog` (aggregated counts), this stores one row per query with
@@ -134,7 +142,7 @@ class ClientQueryEvent(Base):
     )
 
 
-class AppSetting(Base):
+class AppSetting(ConfigBase):
     __tablename__ = "app_settings"
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -144,7 +152,7 @@ class AppSetting(Base):
     )
 
 
-class RuntimeStat(Base):
+class RuntimeStat(StatsBase):
     """Point-in-time gauges sampled by the DNS server (cache size, blocklist size, ...).
 
     A small key/value snapshot flushed on the query-flush interval; ``updated_at``
@@ -160,7 +168,7 @@ class RuntimeStat(Base):
     )
 
 
-class DnsCacheEntry(Base):
+class DnsCacheEntry(CacheBase):
     """A point-in-time snapshot row of one in-memory DNS cache entry.
 
     The DNS worker periodically mirrors its answer cache into this table because
@@ -184,7 +192,7 @@ class DnsCacheEntry(Base):
     )
 
 
-class UncacheableResponse(Base):
+class UncacheableResponse(StatsBase):
     """A forwarded answer the resolver could not cache, with a reason and hit count.
 
     One row per ``(client, domain, qtype, reason)``: the DNS worker aggregates these
@@ -218,7 +226,7 @@ class UncacheableResponse(Base):
     )
 
 
-class CacheOutcomeHourly(Base):
+class CacheOutcomeHourly(StatsBase):
     """Hourly count of forwarded-query cache outcomes, one row per (hour, reason).
 
     A long-format time series for charting *why* forwarded answers were or weren't
@@ -241,7 +249,7 @@ class CacheOutcomeHourly(Base):
     hits: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
 
-class UpstreamHourlyRtt(Base):
+class UpstreamHourlyRtt(StatsBase):
     """Per-upstream forward round-trip time for one wall-clock hour.
 
     Stores the sum and count so the hourly upsert stays exact as flush batches
@@ -263,7 +271,7 @@ class UpstreamHourlyRtt(Base):
     max_ms: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
 
-class ClientHourlyStat(Base):
+class ClientHourlyStat(StatsBase):
     """Per-client DNS query counts for one wall-clock hour, broken down by result.
 
     Written once an hour from an in-memory buffer (upsert on ``hour_start`` +
@@ -293,7 +301,7 @@ class ClientHourlyStat(Base):
     )
 
 
-class ClientRequest(Base):
+class ClientRequest(StatsBase):
     """Per-client DNS request object (query name) with a hit counter.
 
     One row per ``(client, domain, qtype)``. Aggregated in memory and written in
@@ -318,7 +326,7 @@ class ClientRequest(Base):
     )
 
 
-class ClientNewDomainStat(Base):
+class ClientNewDomainStat(StatsBase):
     """Per-client count of newly-seen domains in one wall-clock hour.
 
     Materialized hourly from ``client_requests`` as a *dense* series: every known
@@ -337,7 +345,7 @@ class ClientNewDomainStat(Base):
     new_domains: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
 
 
-class ForeignClient(Base):
+class ForeignClient(StatsBase):
     """A source IP whose queries were dropped for being outside the trusted subnets.
 
     One row per untrusted source IP: ``hits`` accumulates across dropped queries,
@@ -359,7 +367,7 @@ class ForeignClient(Base):
     )
 
 
-class Blocklist(Base):
+class Blocklist(ConfigBase):
     """Configuration for a downloadable DNS blocklist (name, source URL, cadence).
 
     The list contents themselves live in the separate blocklist database
@@ -387,7 +395,7 @@ class Blocklist(Base):
     )
 
 
-class BlocklistOverride(Base):
+class BlocklistOverride(ConfigBase):
     """A domain exempted from every blocklist (an allowlist entry).
 
     Override domains are stripped from each blocklist's parsed domains before they
@@ -407,7 +415,7 @@ class BlocklistOverride(Base):
     )
 
 
-class LocalZone(Base):
+class LocalZone(ConfigBase):
     """Configuration for a downloadable file of locally-served DNS records.
 
     Each zone is an http(s) source (typically a raw GitHub URL) of ``value,name``
@@ -436,7 +444,7 @@ class LocalZone(Base):
     )
 
 
-class LocalDnsRecord(Base):
+class LocalDnsRecord(ConfigBase):
     """One expanded DNS record produced from a :class:`LocalZone`'s source file.
 
     A ``value,name`` source line expands into a forward record (``A``/``AAAA`` or

@@ -133,7 +133,8 @@ def delete_host(host_id: int) -> bool:
             return False
         ip = host.ip
         session.delete(host)
-    # Stats, requests, query-log and policies live in the separate config DB, keyed by IP.
+    # Stats, requests, query-log and policies live in their own databases, keyed by
+    # IP; the binds-routed session fans each delete out to the right engine.
     with session_scope() as session:
         session.execute(delete(ClientHourlyStat).where(ClientHourlyStat.client == ip))
         session.execute(delete(ClientRequest).where(ClientRequest.client == ip))

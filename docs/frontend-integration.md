@@ -838,6 +838,21 @@ Supports `limit`/`offset`, an optional `?reason=` filter, and an optional
 Recorded only while `cache_enabled` is true (when caching is off there is no
 hit rate to diagnose). → `{ "status": "ok", "uncacheable": [ … ], "total": 12 }`
 
+#### `DELETE /cache/uncacheable/{id}`
+Delete a single row by `id`.
+→ `200 { "status": "ok", "deleted": <id> }` or `404` if no such row.
+
+The DNS worker re-adds the entry on its next flush if that client keeps getting
+the same uncacheable answer.
+
+#### `DELETE /cache/uncacheable`
+Reset the table. → `200 { "status": "ok", "deleted": <count> }` where `deleted`
+is the number of rows removed (`0` if it was already empty). Accepts the same
+optional `?reason=` and `?client=` filters as the `GET`, so you can clear just
+the currently-filtered view (omit both to wipe everything). The buffered,
+not-yet-flushed hits held in the DNS worker are unaffected, so a row can reappear
+on the next flush while the same answers keep recurring.
+
 ---
 
 ### 7.12 Recent client queries (live)
@@ -927,8 +942,9 @@ The individual **source IPs** whose queries were dropped for falling outside the
 trusted subnets (§7.13). While the `foreign` stat series (§7.8) only gives an
 aggregate count, this resource records **which** IPs are probing the resolver,
 with a per-IP hit counter and first/last-seen timestamps. Written by the DNS
-worker from an in-memory buffer on the `query_flush_seconds` tick. This resource
-is **read-only** — there are no create/update/delete endpoints.
+worker from an in-memory buffer on the `query_flush_seconds` tick. Rows are
+populated automatically; the only writes a client makes are deletes (dismiss one
+offender or clear the whole list).
 
 To keep cardinality bounded against spoofed-source floods, two caps apply: the
 worker buffers at most a fixed number of distinct IPs between flushes (additional
@@ -952,6 +968,17 @@ List, paginated. → `{ "status": "ok", "foreign_clients": [...], "total": N }`
 
 Optional `limit`/`offset` (omit both to return every retained row). With no
 trusted networks configured nothing is ever dropped, so this list stays empty.
+
+#### `DELETE /foreign-clients/{id}`
+Delete a single offender by `id`.
+→ `200 { "status": "ok", "deleted": <id> }` or `404` if no such row.
+
+The DNS worker re-adds the IP on its next flush if that source keeps querying
+from outside the trusted subnets.
+
+#### `DELETE /foreign-clients`
+Clear the whole list. → `200 { "status": "ok", "deleted": <count> }` where
+`deleted` is the number of rows removed (`0` if it was already empty).
 
 ---
 

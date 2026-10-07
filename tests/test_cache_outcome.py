@@ -6,7 +6,7 @@ from webtest import TestApp
 
 from mirenai import config, db
 from mirenai.api.app import create_app
-from mirenai.db import Base, session_scope
+from mirenai.db import session_scope
 from mirenai.domain.cacheoutcome import CACHE_OUTCOME_REASONS, CacheOutcomeAgg, CacheOutcomeBuffer
 from mirenai.repository import cache_outcome as repo
 from mirenai.repository.models import CacheOutcomeHourly
@@ -14,12 +14,11 @@ from mirenai.repository.models import CacheOutcomeHourly
 
 @pytest.fixture()
 def temp_config_db(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    db_path = tmp_path / "mirenai.db"
-    monkeypatch.setattr(config.settings, "database_url", f"sqlite:///{db_path}")
-    # Force the cached engine/session factory to rebuild against the temp DB.
-    monkeypatch.setattr(db, "_engine", None)
-    monkeypatch.setattr(db, "_session_factory", None)
-    Base.metadata.create_all(db.get_engine())
+    for _name in ("config", "stats", "cache", "querylog"):
+        monkeypatch.setattr(
+            config.settings, f"{_name}_database_url", f"sqlite:///{tmp_path / f'{_name}.db'}"
+        )
+    db.create_all_schemas()
     yield
 
 

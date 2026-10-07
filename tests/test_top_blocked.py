@@ -6,7 +6,7 @@ from webtest import TestApp
 
 from mirenai import config, db
 from mirenai.api.app import create_app
-from mirenai.db import Base, BlocklistBase, session_scope
+from mirenai.db import BlocklistBase, session_scope
 from mirenai.repository import blocklists as blocklists_repo
 from mirenai.repository import query_log as repo
 from mirenai.repository.models import QueryLog
@@ -14,16 +14,14 @@ from mirenai.repository.models import QueryLog
 
 @pytest.fixture()
 def temp_dbs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    config_path = tmp_path / "mirenai.db"
-    blocklist_path = tmp_path / "blocklist.db"
-    monkeypatch.setattr(config.settings, "database_url", f"sqlite:///{config_path}")
-    monkeypatch.setattr(config.settings, "blocklist_database_url", f"sqlite:///{blocklist_path}")
-    # Force the cached engines/session factories to rebuild against the temp DBs.
-    monkeypatch.setattr(db, "_engine", None)
-    monkeypatch.setattr(db, "_session_factory", None)
-    monkeypatch.setattr(db, "_blocklist_engine", None)
-    monkeypatch.setattr(db, "_blocklist_session_factory", None)
-    Base.metadata.create_all(db.get_engine())
+    for _name in ("config", "stats", "cache", "querylog"):
+        monkeypatch.setattr(
+            config.settings, f"{_name}_database_url", f"sqlite:///{tmp_path / f'{_name}.db'}"
+        )
+    monkeypatch.setattr(
+        config.settings, "blocklist_database_url", f"sqlite:///{tmp_path / 'blocklist.db'}"
+    )
+    db.create_all_schemas()
     BlocklistBase.metadata.create_all(db.get_blocklist_engine())
     yield
 

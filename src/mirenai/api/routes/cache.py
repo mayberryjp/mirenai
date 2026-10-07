@@ -2,7 +2,7 @@ from typing import Any
 
 from bottle import Bottle, request
 
-from mirenai.api.errors import read_pagination
+from mirenai.api.errors import error, read_pagination
 from mirenai.repository import cache_control as repo
 from mirenai.repository import cache_entries as entries_repo
 from mirenai.repository import uncacheable as uncacheable_repo
@@ -38,6 +38,19 @@ def register_cache_routes(app: Bottle) -> None:
         )
         total = uncacheable_repo.count_uncacheable(reason=reason, client=client)
         return {"status": "ok", "uncacheable": rows, "total": total}
+
+    @app.delete("/cache/uncacheable")
+    def clear_uncacheable() -> dict[str, Any]:
+        reason = (request.query.get("reason") or "").strip() or None
+        client = request.query.get("client") or None
+        deleted = uncacheable_repo.delete_all_uncacheable(reason=reason, client=client)
+        return {"status": "ok", "deleted": deleted}
+
+    @app.delete("/cache/uncacheable/<entry_id:int>")
+    def delete_uncacheable(entry_id: int) -> dict[str, Any]:
+        if not uncacheable_repo.delete_uncacheable(entry_id):
+            return error("not_found", "not found", 404)
+        return {"status": "ok", "deleted": entry_id}
 
     @app.post("/cache/flush")
     def flush_cache() -> dict[str, Any]:

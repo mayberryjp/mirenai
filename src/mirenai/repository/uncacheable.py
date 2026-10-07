@@ -9,9 +9,9 @@ recently seen rows so a flood of unique names can't grow it without bound.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import CursorResult, delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mirenai.db import session_scope
@@ -93,3 +93,25 @@ def count_uncacheable(reason: str | None = None, client: str | None = None) -> i
         stmt = stmt.where(UncacheableResponse.client == client)
     with session_scope() as session:
         return len(session.scalars(stmt).all())
+
+
+def delete_uncacheable(entry_id: int) -> bool:
+    with session_scope() as session:
+        row = session.get(UncacheableResponse, entry_id)
+        if row is None:
+            return False
+        session.delete(row)
+        return True
+
+
+def delete_all_uncacheable(reason: str | None = None, client: str | None = None) -> int:
+    """Remove retained uncacheable rows (optionally filtered). Returns the number deleted."""
+    stmt = delete(UncacheableResponse)
+    if reason is not None:
+        stmt = stmt.where(UncacheableResponse.reason == reason)
+    if client is not None:
+        stmt = stmt.where(UncacheableResponse.client == client)
+    with session_scope() as session:
+        # Session.execute(DELETE) is typed Result but returns CursorResult at runtime.
+        result = cast(CursorResult[Any], session.execute(stmt))
+        return result.rowcount or 0
