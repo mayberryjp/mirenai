@@ -516,7 +516,8 @@ host to hide that client's new domains from `GET /stats/new-domains/recent`.
 | `mac_address` | string \| null    | MAC address synced from Sando; `null` until set     |
 | `excluded_from_blocklist` | bool  | when `true`, this client's queries bypass the blocklist (default `false`) |
 | `flag_new_domains` | bool  | when `false`, this client's newly-seen domains are hidden from `GET /stats/new-domains/recent` (default `true`) |
-| `query_count` | int               | total queries seen from this IP; server-maintained |
+| `query_count` | int               | total queries seen from this IP (all-time); server-maintained |
+| `500h_queries` | int              | queries from this IP in the trailing 500 hours (summed from the per-client hourly stats); server-maintained, rolls off with the 500h stats retention |
 | `first_seen`  | string (datetime) | server-recorded                                    |
 | `last_seen`   | string (datetime) | server-maintained                                  |
 
@@ -533,7 +534,7 @@ Set or clear the device name and/or icon, toggle blocklist exclusion, or toggle 
 ```json
 { "device_name": "living-room-tv", "icon": "television_icon", "excluded_from_blocklist": true }
 ```
-Validation: `device_name` and `icon` are each a string of at most 255 characters, or `null`. Whitespace is trimmed; an empty/blank string is stored as `null` (so sending `""` or `null` clears that field). `excluded_from_blocklist` and `flag_new_domains` are booleans (`null` is ignored). Any field may be sent on its own. `ip`, `mac_address`, `query_count`, `first_seen`, `last_seen`, and `id` are read-only — sending any of them (or any other key) is rejected with `422`.
+Validation: `device_name` and `icon` are each a string of at most 255 characters, or `null`. Whitespace is trimmed; an empty/blank string is stored as `null` (so sending `""` or `null` clears that field). `excluded_from_blocklist` and `flag_new_domains` are booleans (`null` is ignored). Any field may be sent on its own. `ip`, `mac_address`, `query_count`, `500h_queries`, `first_seen`, `last_seen`, and `id` are read-only — sending any of them (or any other key) is rejected with `422`.
 
 #### `POST /hosts/{id}/sync`
 Sync this host's `device_name`, `icon` and `mac_address` from the configured Sando instance (looks the host's IP up in Sando and copies its friendly name, icon and MAC address). → `200 { "status": "ok", "host": {...} }` with the updated host.

@@ -14,6 +14,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mirenai.db import hosts_session_scope, session_scope
+from mirenai.repository.client_stats import sum_total_by_client
 from mirenai.repository.models import (
     ClientHourlyStat,
     ClientRequest,
@@ -36,6 +37,15 @@ def _to_dict(host: Host) -> dict[str, Any]:
         "first_seen": host.first_seen.isoformat(),
         "last_seen": host.last_seen.isoformat(),
     }
+
+
+def _attach_recent_totals(hosts: list[dict[str, Any]]) -> None:
+    """Add each host's trailing-500h query total, summed from ``client_hourly_stats``."""
+    if not hosts:
+        return
+    totals = sum_total_by_client([host["ip"] for host in hosts])
+    for host in hosts:
+        host["500h_queries"] = totals.get(host["ip"], 0)
 
 
 def load_known_hosts() -> set[str]:
@@ -79,7 +89,9 @@ def list_hosts(limit: int | None = None, offset: int = 0) -> list[dict[str, Any]
         stmt = stmt.limit(limit).offset(offset)
     with hosts_session_scope() as session:
         rows = session.scalars(stmt).all()
-        return [_to_dict(row) for row in rows]
+        hosts = [_to_dict(row) for row in rows]
+    _attach_recent_totals(hosts)
+    return hosts
 
 
 def count_hosts() -> int:
@@ -90,7 +102,11 @@ def count_hosts() -> int:
 def get_host(host_id: int) -> dict[str, Any] | None:
     with hosts_session_scope() as session:
         host = session.get(Host, host_id)
-        return _to_dict(host) if host is not None else None
+        if host is None:
+            return None
+        result = _to_dict(host)
+    _attach_recent_totals([result])
+    return result
 
 
 def update_host(host_id: int, data: dict[str, Any]) -> dict[str, Any] | None:
@@ -107,7 +123,9 @@ def update_host(host_id: int, data: dict[str, Any]) -> dict[str, Any] | None:
         if data.get("flag_new_domains") is not None:
             host.flag_new_domains = data["flag_new_domains"]
         session.flush()
-        return _to_dict(host)
+        result = _to_dict(host)
+    _attach_recent_totals([result])
+    return result
 
 
 def update_host_by_ip(ip: str, data: dict[str, Any]) -> dict[str, Any] | None:
@@ -123,7 +141,9 @@ def update_host_by_ip(ip: str, data: dict[str, Any]) -> dict[str, Any] | None:
         if "mac_address" in data:
             host.mac_address = data["mac_address"]
         session.flush()
-        return _to_dict(host)
+        result = _to_dict(host)
+    _attach_recent_totals([result])
+    return result
 
 
 def delete_host(host_id: int) -> bool:

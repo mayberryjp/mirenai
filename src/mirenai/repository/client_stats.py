@@ -7,7 +7,7 @@ counts, then purges buckets older than ``RETENTION_HOURS``.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -147,6 +147,27 @@ def count_client_stats(client: str | None = None, hours: int | None = None) -> i
         stmt = stmt.where(ClientHourlyStat.hour_start >= datetime.now() - timedelta(hours=hours))
     with session_scope() as session:
         return len(session.scalars(stmt).all())
+
+
+def sum_total_by_client(
+    clients: Collection[str] | None = None, hours: int = RETENTION_HOURS
+) -> dict[str, int]:
+    """Sum each client's per-hour query ``total`` over the last ``hours`` (capped at retention).
+
+    Restricted to ``clients`` when given. Clients with no buckets in the window are
+    absent from the result; callers default them to 0. Buckets roll off with the
+    ``RETENTION_HOURS`` purge, so this is a trailing-window total, not an all-time one.
+    """
+    cutoff = datetime.now() - timedelta(hours=min(hours, RETENTION_HOURS))
+    stmt = (
+        select(ClientHourlyStat.client, func.sum(ClientHourlyStat.total))
+        .where(ClientHourlyStat.hour_start >= cutoff)
+        .group_by(ClientHourlyStat.client)
+    )
+    if clients is not None:
+        stmt = stmt.where(ClientHourlyStat.client.in_(list(clients)))
+    with session_scope() as session:
+        return {client: int(total or 0) for client, total in session.execute(stmt).all()}
 
 
 def _site_to_dict(row: Any) -> dict[str, Any]:

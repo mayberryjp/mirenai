@@ -1,11 +1,12 @@
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
 from mirenai import config, db
 from mirenai.domain.clientstats import ClientStatAgg, ClientStatsBuffer
 from mirenai.repository import client_stats as repo
+from mirenai.repository.models import ClientHourlyStat
 
 
 @pytest.fixture()
@@ -91,3 +92,37 @@ def test_local_result_maps_to_local_column_not_overridden() -> None:
     assert len(captured) == 1
     assert captured[0].local == 1
     assert captured[0].overridden == 1
+
+
+def test_sum_total_by_client_groups_and_sums(temp_config_db: None) -> None:
+    hour = datetime.now().replace(minute=0, second=0, microsecond=0)
+    repo.record_client_stats(
+        [
+            _agg(hour, "10.0.0.1", total=4),
+            _agg(hour - timedelta(hours=1), "10.0.0.1", total=6),
+            _agg(hour, "10.0.0.2", total=2),
+        ]
+    )
+    assert repo.sum_total_by_client() == {"10.0.0.1": 10, "10.0.0.2": 2}
+
+
+def test_sum_total_by_client_filters_to_requested_clients(temp_config_db: None) -> None:
+    hour = datetime.now().replace(minute=0, second=0, microsecond=0)
+    repo.record_client_stats(
+        [_agg(hour, "10.0.0.1", total=4), _agg(hour, "10.0.0.2", total=2)]
+    )
+    assert repo.sum_total_by_client(["10.0.0.2"]) == {"10.0.0.2": 2}
+    assert repo.sum_total_by_client(["10.0.0.9"]) == {}
+
+
+def test_sum_total_by_client_excludes_buckets_outside_window(temp_config_db: None) -> None:
+    now = datetime.now().replace(minute=0, second=0, microsecond=0)
+    # Add directly so the >500h bucket isn't purged by record_client_stats on write.
+    with db.session_scope() as session:
+        session.add(
+            ClientHourlyStat(hour_start=now - timedelta(hours=10), client="10.0.0.1", total=5)
+        )
+        session.add(
+            ClientHourlyStat(hour_start=now - timedelta(hours=600), client="10.0.0.1", total=9)
+        )
+    assert repo.sum_total_by_client(["10.0.0.1"]) == {"10.0.0.1": 5}
