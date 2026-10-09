@@ -150,8 +150,8 @@ def list_new_domain_counts(client: str | None = None) -> list[dict[str, Any]]:
 
 def _last_actions_for(
     session: Session, pairs: list[tuple[str, str]]
-) -> dict[tuple[str, str], str | None]:
-    """Map each ``(client, domain)`` to the query log's newest ``last_action``.
+) -> dict[tuple[str, str], tuple[str | None, str]]:
+    """Map each ``(client, domain)`` to the query log's newest ``(last_action, qtype)``.
 
     ``query_log`` lives in a separate database from ``client_requests``, so this is
     a second query (SQLite can't join across files) merged in Python. One row per
@@ -160,13 +160,13 @@ def _last_actions_for(
     if not pairs:
         return {}
     stmt = (
-        select(QueryLog.client, QueryLog.domain, QueryLog.last_action)
+        select(QueryLog.client, QueryLog.domain, QueryLog.last_action, QueryLog.qtype)
         .where(tuple_(QueryLog.client, QueryLog.domain).in_(pairs))
         .order_by(QueryLog.last_seen.desc(), QueryLog.id.desc())
     )
-    actions: dict[tuple[str, str], str | None] = {}
-    for client, domain, last_action in session.execute(stmt):
-        actions.setdefault((client, domain), last_action)
+    actions: dict[tuple[str, str], tuple[str | None, str]] = {}
+    for client, domain, last_action, qtype in session.execute(stmt):
+        actions.setdefault((client, domain), (last_action, qtype))
     return actions
 
 
@@ -179,7 +179,8 @@ def list_recent_new_domains(
     query types, ordered by that timestamp descending and capped at ``limit``
     (the top-N most recently discovered domains). ``last_action`` is the action
     the query log last recorded for that ``(client, domain)`` (newest
-    ``last_seen`` across query types), or ``None`` when the query log has no row.
+    ``last_seen`` across query types), or ``None`` when the query log has no row;
+    ``last_qtype`` is the query type of that same row.
     Clients in ``exclude_clients`` are filtered out before the limit is applied
     (used to drop clients opted out of new-domain monitoring).
     """
@@ -199,12 +200,16 @@ def list_recent_new_domains(
     with session_scope() as session:
         rows = session.execute(stmt).all()
         actions = _last_actions_for(session, [(row.client, row.domain) for row in rows])
-        return [
-            {
-                "client": row.client,
-                "domain": row.domain,
-                "first_seen": row.first_seen.isoformat(),
-                "last_action": actions.get((row.client, row.domain)),
-            }
-            for row in rows
-        ]
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            last_action, last_qtype = actions.get((row.client, row.domain), (None, None))
+            result.append(
+                {
+                    "client": row.client,
+                    "domain": row.domain,
+                    "first_seen": row.first_seen.isoformat(),
+                    "last_action": last_action,
+                    "last_qtype": last_qtype,
+                }
+            )
+        return result

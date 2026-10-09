@@ -162,6 +162,9 @@ def test_recent_new_domains_includes_last_action(temp_config_db: None) -> None:
 
     assert actions["a.com"] == "blocklist"
     assert actions["b.com"] is None
+    qtypes = {r["domain"]: r["last_qtype"] for r in rows}
+    assert qtypes["a.com"] == "AAAA"
+    assert qtypes["b.com"] is None
 
 
 def test_recent_new_domains_route_envelope_and_limit(monkeypatch: pytest.MonkeyPatch) -> None:
