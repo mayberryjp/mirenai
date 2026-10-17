@@ -65,6 +65,8 @@ class Upstream(ConfigBase):
     address: Mapped[str] = mapped_column(String(64), nullable=False)
     port: Mapped[int] = mapped_column(Integer, nullable=False, default=53)
     protocol: Mapped[str] = mapped_column(String(8), nullable=False, default="udp")
+    use_tls: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
+    tls_server_name: Mapped[str | None] = mapped_column(String(253), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     created_at: Mapped[datetime] = mapped_column(

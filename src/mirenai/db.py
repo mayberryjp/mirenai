@@ -227,6 +227,7 @@ def init_db() -> None:
     BlocklistBase.metadata.create_all(get_blocklist_engine())
     HostsBase.metadata.create_all(get_hosts_engine())
 
+    _ensure_upstreams_tls_columns()
     _migrate_legacy_database()
 
     _ensure_hosts_icon_column()
@@ -320,6 +321,18 @@ def _copy_legacy_table(legacy_engine: Engine, engine: Engine, table: Table) -> N
         if rows:
             dst.execute(table.insert(), [dict(row) for row in rows])
 
+
+
+def _ensure_upstreams_tls_columns() -> None:
+    """Upgrade existing upstreams without changing their plaintext transport."""
+    with get_config_engine().begin() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(upstreams)"))}
+        if columns and "use_tls" not in columns:
+            conn.execute(
+                text("ALTER TABLE upstreams ADD COLUMN use_tls BOOLEAN NOT NULL DEFAULT 0")
+            )
+        if columns and "tls_server_name" not in columns:
+            conn.execute(text("ALTER TABLE upstreams ADD COLUMN tls_server_name VARCHAR(253)"))
 
 
 def _ensure_hosts_icon_column() -> None:

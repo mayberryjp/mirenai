@@ -12,7 +12,8 @@ VLAN, and your own laptop can each get a different answer for the same name, all
 from one policy table.
 
 > Self-hosted homelab project, currently `v0.1.0`. One container, SQLite for
-> storage, plain DNS over UDP and TCP. No external database or extra services to
+> storage, client DNS over UDP and TCP, and optional DNS-over-TLS upstreams.
+> No external database or extra services to
 > run.
 
 ## What it does
@@ -42,6 +43,8 @@ from one policy table.
 - **Live configuration** — policies, upstreams, blocklists, and settings live in
   the database and are re-read on a timer. Change a rule and it takes effect in
   seconds, no restart.
+- **Encrypted upstreams** — enable DNS-over-TLS per upstream, with mandatory
+  certificate and hostname verification. Client devices can keep using normal DNS.
 - **Real visibility** — per-client query counts, a searchable query log, a live
   per-client request/response tail, a feed of newly-seen domains, and runtime
   gauges like cache size and blocklist size.
@@ -131,6 +134,34 @@ out of the box. Lock it down by adding policies or switching `default_action` to
 > capability, which `docker-compose.yml` already grants.
 
 ## Configuration
+
+### DNS-over-TLS upstreams
+
+Set `use_tls` to `true` and supply the provider's `tls_server_name`:
+
+```json
+{
+  "address": "1.1.1.1",
+  "port": 853,
+  "use_tls": true,
+  "tls_server_name": "cloudflare-dns.com"
+}
+```
+
+Send this to `POST /upstreams`, or update an existing upstream with
+`PUT /upstreams/{id}`. TLS always uses TCP regardless of `protocol`; the server
+name is required for SNI and certificate hostname verification, while `address`
+remains the connection IP. The system CA trust store validates the certificate.
+New TLS upstreams default to port 853 if omitted; partial updates preserve the
+existing port, so specify 853 when enabling TLS on an existing port-53 upstream.
+`use_tls` defaults to `false`, preserving existing UDP/TCP behavior.
+Forwarding and health checks both use the configured transport. A TLS failure
+never retries that upstream over plaintext; normal failover still tries other
+enabled upstreams, so configure only TLS upstreams if encryption is required.
+Each TLS query currently opens its own connection; connections are not pooled.
+This encrypts only the upstream hop, not DNS traffic from devices to mirenai.
+
+### Deployment settings
 
 Environment variables cover deployment only; everything operational lives in the
 database and is edited through the API. All of these are set in

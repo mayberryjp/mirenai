@@ -1,8 +1,9 @@
 from typing import Any
 
 from bottle import Bottle, response
+from pydantic import ValidationError
 
-from mirenai.api.errors import error, parse_body, read_pagination
+from mirenai.api.errors import _first_error_detail, error, parse_body, read_pagination
 from mirenai.api.schemas import UpstreamCreate, UpstreamUpdate
 from mirenai.domain.state import UpstreamServer
 from mirenai.domain.upstream_probe import ProbeError, probe_upstream
@@ -43,7 +44,17 @@ def register_upstream_routes(app: Bottle) -> None:
         model, err = parse_body(UpstreamUpdate)
         if model is None:
             return err or error("bad_request", "Invalid request", 400)
-        row = repo.update_upstream(upstream_id, model.model_dump(exclude_unset=True))
+        existing = repo.get_upstream(upstream_id)
+        if existing is None:
+            return error("not_found", "not found", 404)
+        changes = model.model_dump(exclude_unset=True)
+        merged = {key: existing[key] for key in UpstreamCreate.model_fields}
+        merged.update(changes)
+        try:
+            UpstreamCreate.model_validate(merged)
+        except ValidationError as exc:
+            return error("validation_error", "Invalid request", 422, _first_error_detail(exc))
+        row = repo.update_upstream(upstream_id, changes)
         if row is None:
             return error("not_found", "not found", 404)
         return {"status": "ok", "upstream": row}
@@ -64,6 +75,8 @@ def register_upstream_routes(app: Bottle) -> None:
             port=row["port"],
             protocol=row["protocol"],
             priority=row["priority"],
+            use_tls=row["use_tls"],
+            tls_server_name=row["tls_server_name"],
         )
         try:
             rtt_ms = probe_upstream(server, load_runtime_settings().forward_timeout)

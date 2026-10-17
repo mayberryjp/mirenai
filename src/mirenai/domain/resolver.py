@@ -48,6 +48,7 @@ from mirenai.domain.queryevents import QueryEventBuffer
 from mirenai.domain.state import RuntimeSettings, RuntimeState, UpstreamServer
 from mirenai.domain.uncacheable import UncacheableBuffer
 from mirenai.domain.upstreamstats import UpstreamRttBuffer
+from mirenai.domain.upstream_transport import query_upstream
 from mirenai.logging import get_logger
 
 log = get_logger("dns.resolver")
@@ -422,23 +423,7 @@ class DnsResolver:
         for upstream in self._balanced_order(upstreams):
             try:
                 start = time.perf_counter()
-                use_tcp = upstream.protocol == "tcp"
-                raw = request.send(
-                    upstream.address,
-                    upstream.port,
-                    tcp=use_tcp,
-                    timeout=settings.forward_timeout,
-                )
-                reply = DNSRecord.parse(raw)
-                if reply.header.tc and not use_tcp:
-                    # Truncated over UDP: retry the same upstream over TCP for the full answer.
-                    raw = request.send(
-                        upstream.address,
-                        upstream.port,
-                        tcp=True,
-                        timeout=settings.forward_timeout,
-                    )
-                    reply = DNSRecord.parse(raw)
+                reply = query_upstream(request, upstream, settings.forward_timeout)
                 self._rtt.add(upstream.address, (time.perf_counter() - start) * 1000)
                 return reply
             except Exception as exc:
@@ -446,7 +431,7 @@ class DnsResolver:
                     "upstream %s:%s (%s) failed: %s",
                     upstream.address,
                     upstream.port,
-                    upstream.protocol,
+                    "tls" if upstream.use_tls else upstream.protocol,
                     exc,
                 )
         log.warning("all upstream resolvers failed")

@@ -592,6 +592,41 @@ def test_untruncated_udp_response_is_not_retried() -> None:
     assert [str(rr.rdata) for rr in reply.rr] == ["1.2.3.4"]
 
 
+def test_forward_dispatches_tls_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mirenai.domain import resolver as resolver_module
+
+    server = UpstreamServer("1.1.1.1", 853, "udp", 100, True, "cloudflare-dns.com")
+    resolver = _make_resolver([], upstreams=[server])
+    sent: list[UpstreamServer] = []
+
+    def query(request: DNSRecord, upstream: UpstreamServer, timeout: float) -> DNSRecord:
+        sent.append(upstream)
+        reply = request.reply()
+        reply.add_answer(RR(request.q.qname, QTYPE.A, ttl=60, rdata=A("1.2.3.4")))
+        return reply
+
+    monkeypatch.setattr(resolver_module, "query_upstream", query)
+    reply = resolver.handle(DNSRecord.question("example.com"), "10.0.0.1")
+    assert sent == [server]
+    assert [str(rr.rdata) for rr in reply.rr] == ["1.2.3.4"]
+
+
+def test_failed_tls_upstream_returns_servfail(monkeypatch: pytest.MonkeyPatch) -> None:
+    import ssl
+
+    from mirenai.domain import resolver as resolver_module
+
+    server = UpstreamServer("1.1.1.1", 853, "udp", 100, True, "cloudflare-dns.com")
+    resolver = _make_resolver([], upstreams=[server])
+
+    def query(request: DNSRecord, upstream: UpstreamServer, timeout: float) -> DNSRecord:
+        raise ssl.SSLCertVerificationError("certificate mismatch")
+
+    monkeypatch.setattr(resolver_module, "query_upstream", query)
+    reply = resolver.handle(DNSRecord.question("example.com"), "10.0.0.1")
+    assert reply.header.rcode == RCODE.SERVFAIL
+
+
 def test_query_buffer_aggregates_counts() -> None:
     captured: list[QueryAgg] = []
     buffer = QueryBuffer(flush=captured.extend, flush_seconds=5)

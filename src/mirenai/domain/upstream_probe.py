@@ -7,6 +7,7 @@ import time
 from dnslib import DNSRecord
 
 from mirenai.domain.state import UpstreamServer
+from mirenai.domain.upstream_transport import query_upstream
 
 # Innocuous, always-resolvable name used purely to measure the round trip.
 _PROBE_DOMAIN = "example.com"
@@ -25,13 +26,7 @@ def probe_upstream(server: UpstreamServer, timeout: float) -> float:
     query = DNSRecord.question(_PROBE_DOMAIN, "A")
     start = time.perf_counter()
     try:
-        raw = query.send(
-            server.address,
-            server.port,
-            tcp=server.protocol == "tcp",
-            timeout=timeout,
-        )
-        DNSRecord.parse(raw)
+        query_upstream(query, server, timeout)
     except Exception as exc:
         raise ProbeError(str(exc)) from exc
     return round((time.perf_counter() - start) * 1000, 1)

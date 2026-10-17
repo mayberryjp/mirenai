@@ -26,6 +26,8 @@ class UpstreamServer:
     port: int
     protocol: str
     priority: int
+    use_tls: bool = False
+    tls_server_name: str | None = None
 
 
 @dataclass(frozen=True)

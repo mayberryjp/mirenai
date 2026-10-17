@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ipaddress import ip_address, ip_network
+import re
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
@@ -25,6 +26,22 @@ def _check_port(value: int) -> int:
     if not 1 <= value <= 65535:
         raise ValueError("port must be between 1 and 65535")
     return value
+
+
+def _check_tls_server_name(value: str | None) -> str | None:
+    if value is None:
+        return None
+    name = value.strip().rstrip(".").encode("idna").decode("ascii").lower()
+    if not name or len(name) > 253 or any(
+        re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) is None
+        for label in name.split(".")
+    ):
+        raise ValueError("tls_server_name must be a DNS hostname")
+    try:
+        ip_address(name)
+    except ValueError:
+        return name
+    raise ValueError("tls_server_name must be a DNS hostname, not an IP address")
 
 
 def _check_url(value: str) -> str:
@@ -135,8 +152,24 @@ class UpstreamCreate(BaseModel):
     address: str
     port: int = 53
     protocol: str = "udp"
+    use_tls: bool = False
+    tls_server_name: str | None = None
     enabled: bool = True
     priority: int = 100
+
+    @field_validator("tls_server_name")
+    @classmethod
+    def _validate_tls_server_name(cls, value: str | None) -> str | None:
+        return _check_tls_server_name(value)
+
+    @model_validator(mode="after")
+    def _validate_tls(self) -> UpstreamCreate:
+        if self.use_tls:
+            if not self.tls_server_name:
+                raise ValueError("tls_server_name is required when use_tls is true")
+            if "port" not in self.model_fields_set:
+                self.port = 853
+        return self
 
     @field_validator("address")
     @classmethod
@@ -164,8 +197,15 @@ class UpstreamUpdate(BaseModel):
     address: str | None = None
     port: int | None = None
     protocol: str | None = None
+    use_tls: bool = False
+    tls_server_name: str | None = None
     enabled: bool | None = None
     priority: int | None = None
+
+    @field_validator("tls_server_name")
+    @classmethod
+    def _validate_tls_server_name(cls, value: str | None) -> str | None:
+        return _check_tls_server_name(value)
 
     @field_validator("address")
     @classmethod

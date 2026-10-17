@@ -18,6 +18,8 @@ def _to_dict(upstream: Upstream) -> dict[str, Any]:
         "address": upstream.address,
         "port": upstream.port,
         "protocol": upstream.protocol,
+        "use_tls": upstream.use_tls,
+        "tls_server_name": upstream.tls_server_name,
         "enabled": upstream.enabled,
         "priority": upstream.priority,
         "created_at": upstream.created_at.isoformat(),
@@ -52,6 +54,8 @@ def create_upstream(data: dict[str, Any]) -> dict[str, Any]:
             address=data["address"],
             port=data.get("port", 53),
             protocol=data.get("protocol", "udp"),
+            use_tls=data.get("use_tls", False),
+            tls_server_name=data.get("tls_server_name"),
             enabled=data.get("enabled", True),
             priority=data.get("priority", 100),
         )
@@ -65,7 +69,10 @@ def update_upstream(upstream_id: int, data: dict[str, Any]) -> dict[str, Any] | 
         upstream = session.get(Upstream, upstream_id)
         if upstream is None:
             return None
-        for field in ("name", "address", "port", "protocol", "enabled", "priority"):
+        for field in (
+            "name", "address", "port", "protocol", "enabled", "priority",
+            "use_tls", "tls_server_name",
+        ):
             if field in data:
                 setattr(upstream, field, data[field])
         session.flush()
@@ -96,6 +103,8 @@ def load_upstreams() -> list[UpstreamServer]:
                 port=row.port,
                 protocol=row.protocol,
                 priority=row.priority,
+                use_tls=row.use_tls,
+                tls_server_name=row.tls_server_name,
             )
             for row in rows
         ]

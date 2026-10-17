@@ -198,8 +198,10 @@ Upstream DNS resolvers used for `forward` answers. Consulted in priority order (
 | `id`         | int               |                                        |
 | `name`       | string \| null    | optional label                         |
 | `address`    | string            | IPv4/IPv6 address                      |
-| `port`       | int               | 1–65535; default `53`                  |
-| `protocol`   | string            | `udp` or `tcp`; default `udp`          |
+| `port`       | int               | 1–65535; create default `53`, or `853` when `use_tls` is true |
+| `protocol`   | string            | `udp` or `tcp`; default `udp`; ignored while TLS is enabled |
+| `use_tls`    | bool              | default `false`; when true, send DNS over verified TLS/TCP |
+| `tls_server_name` | string \| null | DNS hostname for SNI and certificate verification; required when `use_tls` is true |
 | `enabled`    | bool              | default `true`                         |
 | `priority`   | int               | lower = tried first; default `100`     |
 | `created_at` | string (datetime) |                                        |
@@ -220,8 +222,24 @@ Create. → `201 { "status": "ok", "upstream": {...} }`
 ```
 Required: `address`. Validation: `address` must be a valid IP; `port` 1–65535; `protocol` in `{udp, tcp}`. Unknown fields rejected. Errors: `422` (no `409` — upstreams have no uniqueness constraint; duplicates are allowed).
 
+TLS example:
+```json
+{ "name": "cloudflare-tls", "address": "1.1.1.1", "port": 853, "use_tls": true, "tls_server_name": "cloudflare-dns.com" }
+```
+`tls_server_name` must be a nonempty DNS hostname, not an IP, URL, or wildcard.
+Hostnames are normalized to lowercase ASCII (IDNA). TLS always uses TCP,
+validates the certificate against the system CA trust store, and verifies it
+against `tls_server_name`. There is no option to disable verification.
+Existing upstreams acquire `use_tls: false` and `tls_server_name: null` on upgrade.
+
 #### `PUT /upstreams/{id}`
 Partial update. → `200` or `404`. Same validators on supplied fields.
+TLS requirements are checked against the merged existing and supplied values:
+enabling TLS without a stored or supplied server name, or clearing the name while
+TLS stays enabled, returns `422 validation_error`. `use_tls` cannot be null.
+An omitted port is preserved, not switched automatically; supply `"port": 853`
+when enabling TLS on an existing port-53 upstream. To return to plain DNS, set
+`"use_tls": false` and the desired port (normally 53).
 
 #### `DELETE /upstreams/{id}`
 → `200 { "status": "ok", "deleted": <id> }` or `404`.
@@ -233,7 +251,11 @@ if the id is unknown. If the upstream can't be reached or its reply can't be
 parsed (timeout, connection refused, ...), returns `502 upstream_error` with the
 reason in `detail`. Any reply counts as reachable, even an error rcode like
 `SERVFAIL`. No request body; the probe uses the upstream's own `protocol` and the
-current `forward_timeout` setting.
+current `forward_timeout` setting. For TLS upstreams it uses verified TLS with
+the configured `tls_server_name`; certificate failures also return `502 upstream_error`.
+Forwarding and probes never downgrade a TLS upstream to plaintext. Forwarding
+may still fail over to other enabled upstreams, including plaintext ones if configured.
+TLS currently opens a fresh connection for each query.
 
 ---
 
