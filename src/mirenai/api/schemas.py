@@ -6,7 +6,7 @@ from ipaddress import ip_address, ip_network
 import re
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mirenai.domain.blocklist import normalize_override_domain
 from mirenai.domain.policy import VALID_ACTIONS, WILDCARD
@@ -78,7 +78,7 @@ class PolicyCreate(BaseModel):
     domain: str
     action: str
     override_response: str | None = None
-    override_ttl: int = 300
+    override_ttl: int = Field(default=300, ge=0, le=2147483647)
     enabled: bool = True
     description: str | None = None
 
@@ -103,8 +103,14 @@ class PolicyCreate(BaseModel):
 
     @model_validator(mode="after")
     def _override_requires_response(self) -> PolicyCreate:
-        if self.action == "override" and not (self.override_response or "").strip():
-            raise ValueError("override_response is required when action is 'override'")
+        if self.action == "override":
+            if not (self.override_response or "").strip():
+                raise ValueError("override_response is required when action is 'override'")
+            for value in (self.override_response or "").split(","):
+                try:
+                    ip_address(value.strip())
+                except ValueError as exc:
+                    raise ValueError("override_response must contain comma-separated IP addresses") from exc
         return self
 
 

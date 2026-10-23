@@ -82,6 +82,15 @@ For the plain allow-all / block-all case there is a shortcut: `PUT
 /clients/{ip}/mode` with `forward` or `deny` flips a client's wildcard row without
 touching its per-domain exceptions.
 
+**Spoof rules** are policies with `action = override`. List just these with
+`GET /policies?action=override&limit=25&offset=0`; `total` is the filtered count,
+including disabled rules. Create and edit them through `POST /policies` and
+`PUT /policies/{id}`, toggle `enabled`, or remove them with `DELETE /policies/{id}`.
+Override answers must be valid comma-separated IPv4/IPv6 addresses and TTLs must
+be between 0 and 2147483647 seconds; partial edits validate the resulting rule
+before saving. These rules synthesize A/AAAA answers, not arbitrary DNS record
+types. Changes reach the DNS worker on its next `refresh_seconds` reload.
+
 **Blocklists are global.** Enabled blocklists apply to *every* client's queries by
 default, so you don't need a `blocklist` policy row to get filtering. To exempt a
 device, set `excluded_from_blocklist` on its host. To exempt a single *domain* from

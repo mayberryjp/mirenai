@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from mirenai.db import session_scope
 from mirenai.domain.policy import WILDCARD, PolicyRule
@@ -27,18 +27,26 @@ def _to_dict(policy: Policy) -> dict[str, Any]:
     }
 
 
-def list_policies(limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
+def list_policies(
+    limit: int | None = None, offset: int = 0, action: str | None = None
+) -> list[dict[str, Any]]:
     stmt = select(Policy).order_by(Policy.id)
+    if action is not None:
+        stmt = stmt.where(Policy.action == action)
     if limit is not None:
-        stmt = stmt.limit(limit).offset(offset)
+        stmt = stmt.limit(limit)
+    stmt = stmt.offset(offset)
     with session_scope() as session:
         rows = session.scalars(stmt).all()
         return [_to_dict(row) for row in rows]
 
 
-def count_policies() -> int:
+def count_policies(action: str | None = None) -> int:
+    stmt = select(func.count()).select_from(Policy)
+    if action is not None:
+        stmt = stmt.where(Policy.action == action)
     with session_scope() as session:
-        return len(session.scalars(select(Policy.id)).all())
+        return int(session.scalar(stmt) or 0)
 
 
 def get_policy(policy_id: int) -> dict[str, Any] | None:

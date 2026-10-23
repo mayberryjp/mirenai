@@ -147,6 +147,11 @@ Ordering: by `id` ascending.
 #### `GET /policies`
 List. Supports pagination. → `{ "status": "ok", "policies": [...], "total": N }`
 
+Optional `action` filter: `forward`, `override`, `deny`, or `blocklist`. Invalid
+values return `422 validation_error`. Filtering happens before pagination and
+`total` counts all matching policies, including disabled ones. Omit `action` to
+list all policies. Example: `GET /policies?action=override&limit=25&offset=0`.
+
 #### `GET /policies/{id}`
 → `200 { "status": "ok", "policy": {...} }` or `404 not_found`.
 
@@ -171,7 +176,10 @@ Validation:
 - `client`: must be a valid IP address **or** `"*"`.
 - `domain`: must not be empty/blank.
 - `action`: must be one of `forward`, `override`, `deny`, `blocklist`.
-- If `action = "override"`, `override_response` must be a non-empty string.
+- If `action = "override"`, `override_response` must contain one or more valid
+  comma-separated IPv4/IPv6 addresses. Mixed families and spaces around addresses
+  are supported; blank entries, hostnames, and invalid addresses are rejected.
+- `override_ttl`: integer from `0` through `2147483647` seconds.
 - Unknown fields are rejected (`422`).
 
 Errors: `422 validation_error`, `409 conflict` (a policy for this `client`+`domain` already exists).
@@ -179,12 +187,87 @@ Errors: `422 validation_error`, `409 conflict` (a policy for this `client`+`doma
 #### `PUT /policies/{id}`
 Partial update — send only the fields you want to change. → `200 { "status": "ok", "policy": {...} }`
 
-All fields optional; same validators as create apply to supplied fields. Note the create-only cross-field rule (override requires `override_response`) is **not** re-enforced on update, so when switching a policy to `override` include `override_response` in the same request.
+All fields optional. The supplied fields are merged with the existing policy and
+the resulting policy is validated using the create rules before saving. Omitted
+fields are preserved. `description` and `override_response` may be `null`, but
+`override_response` cannot be cleared while the resulting action is `override`.
+Other fields cannot be `null`. When switching to `override`, include a valid
+`override_response` unless the policy already has one. Invalid updates leave the
+stored policy unchanged.
 
 Errors: `422 validation_error`, `404 not_found`, `409 conflict`.
 
 #### `DELETE /policies/{id}`
 → `200 { "status": "ok", "deleted": <id> }` or `404 not_found`.
+
+#### Dedicated spoof-rules page
+
+Spoof rules are ordinary policies with `action: "override"`; there is no separate
+`/spoof-rules` resource. Use the policy ID for all item operations:
+
+| Page operation | Request |
+| --- | --- |
+| List spoof rules | `GET /policies?action=override&limit=25&offset=0` |
+| Load one rule | `GET /policies/{id}` |
+| Add rule | `POST /policies` with `action: "override"` |
+| Edit rule | `PUT /policies/{id}` with changed fields only |
+| Disable / enable | `PUT /policies/{id}` with `{"enabled":false}` / `{"enabled":true}` |
+| Delete rule | `DELETE /policies/{id}` |
+
+Send JSON bodies with `Content-Type: application/json`. Example list response:
+
+```json
+{
+  "status": "ok",
+  "policies": [
+    {
+      "id": 42,
+      "client": "*",
+      "domain": "service.internal.example",
+      "action": "override",
+      "override_response": "10.0.0.53,fd00::53",
+      "override_ttl": 300,
+      "enabled": true,
+      "description": "Internal service",
+      "created_at": "2026-10-22T12:00:00",
+      "updated_at": "2026-10-22T12:00:00"
+    }
+  ],
+  "total": 1
+}
+```
+
+Create, get, and update return the same object under `policy` (singular), with
+`status: "ok"`. Create returns HTTP `201`; other successful operations return
+`200`. A duplicate `(client, domain)` returns `409 conflict`, even if the existing
+policy has a different action or is disabled. An absent item returns `404
+not_found`. Invalid JSON returns `400 bad_request`; invalid field values, unknown
+fields, and invalid action filters return `422 validation_error`. Error shape:
+
+```json
+{
+  "status": "error",
+  "code": "validation_error",
+  "error": "Invalid request",
+  "detail": "override_response is required when action is 'override'"
+}
+```
+
+`detail` is diagnostic text, not a stable machine-readable field identifier.
+There is no search, custom sort, or bulk-edit endpoint; ordering is ID ascending.
+No separate record-type field is needed: IPv4 values answer A queries and IPv6
+values answer AAAA queries. Other query types (or a missing address family) return
+an empty successful answer, not upstream fallback. CNAME, MX, TXT, and automatic
+PTR creation are not supported by policy overrides. With `ipv6_enabled=false`,
+AAAA replies remain empty even when a rule has IPv6 values.
+
+Changes take effect on the DNS worker's next `refresh_seconds` configuration
+reload, not synchronously with the HTTP response. Client-side DNS caches can keep
+an older answer until its TTL expires. Rules use the precedence above; disabled
+rules are listed but ignored by the resolver. Changing a rule's action away from
+`override` removes it from the spoof-rules list on the next fetch. This is distinct
+from `/blocklists/overrides` (domain allowlisting) and `/local-records` (read-only
+records imported from local-zone source files).
 
 ---
 
