@@ -119,6 +119,27 @@ class QueryLog(QueryLogBase):
     )
 
 
+class PolicyDeniedQuery(QueryLogBase):
+    """Actual policy-denial totals, unaffected by later allowed queries."""
+
+    __tablename__ = "policy_denied_queries"
+    __table_args__ = (
+        UniqueConstraint("client", "domain", "qtype", name="uq_policy_denied_queries_pair_type"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client: Mapped[str] = mapped_column(String(64), nullable=False)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    qtype: Mapped[str] = mapped_column(String(16), nullable=False)
+    count: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+
+
 class ClientQueryEvent(QueryLogBase):
     """Individual DNS query/response events for a client, kept for a short window.
 
@@ -141,6 +162,31 @@ class ClientQueryEvent(QueryLogBase):
     response: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True, server_default=_LOCAL_NOW
+    )
+
+
+class DomainNotification(StatsBase):
+    """Persistent first-seen ledger and Discord delivery queue, independent of qtype."""
+
+    __tablename__ = "domain_notifications"
+    __table_args__ = (
+        UniqueConstraint("client", "domain", name="uq_domain_notifications_pair"),
+        Index("ix_domain_notifications_delivery", "status", "next_attempt"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    client: Mapped[str] = mapped_column(String(64), nullable=False)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    qtype: Mapped[str] = mapped_column(String(16), nullable=False)
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    rcode: Mapped[str] = mapped_column(String(16), nullable=False)
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=_LOCAL_NOW
     )
 
 

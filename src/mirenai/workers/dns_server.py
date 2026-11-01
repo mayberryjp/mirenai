@@ -23,6 +23,7 @@ from mirenai.domain.clientrequests import ClientRequestBuffer
 from mirenai.domain.clientstats import ClientStatsBuffer
 from mirenai.domain.foreignclients import ForeignClientBuffer
 from mirenai.domain.hosts import HostTracker
+from mirenai.domain.notifications import NotificationBuffer
 from mirenai.domain.querybuffer import QueryBuffer
 from mirenai.domain.queryevents import QueryEventBuffer
 from mirenai.domain.resolver import DnsResolver
@@ -41,6 +42,7 @@ from mirenai.repository.client_stats import record_client_stats
 from mirenai.repository.foreign_clients import record_foreign_clients
 from mirenai.repository.hosts import load_blocklist_excluded, load_known_hosts, record_hosts
 from mirenai.repository.local_zones import load_local_records
+from mirenai.repository.notifications import record_observations, seed_seen_domains
 from mirenai.repository.policies import ensure_client_policy, load_rules
 from mirenai.repository.query_events import record_query_events
 from mirenai.repository.query_log import record_queries
@@ -50,6 +52,7 @@ from mirenai.repository.trusted_networks import load_trusted_networks
 from mirenai.repository.uncacheable import record_uncacheable
 from mirenai.repository.upstream_stats import record_upstream_rtt
 from mirenai.repository.upstreams import load_upstreams
+from mirenai.workers.notifications import NotificationWorker
 
 log = get_logger("dns.server")
 
@@ -234,6 +237,7 @@ def main() -> None:
     configure_logging(settings.log_level)
 
     state = _build_state()
+    seed_seen_domains()
     runtime = state.settings
     cache: TTLCache[bytes] = TTLCache(runtime.cache_max_entries)
     buffer = QueryBuffer(flush=record_queries, flush_seconds=runtime.query_flush_seconds)
@@ -265,8 +269,11 @@ def main() -> None:
         refresh_seconds=runtime.refresh_seconds,
         on_discover=_make_on_discover(state),
     )
+    notifications = NotificationBuffer(flush=record_observations)
+    notification_worker = NotificationWorker(notifications)
     core = DnsResolver(
-        state, cache, buffer, stats, requests, rtt, events, foreign, uncached, outcomes
+        state, cache, buffer, stats, requests, rtt, events, foreign, uncached, outcomes,
+        notifications,
     )
     resolver = ScreeningResolver(core, hosts)
 
@@ -295,6 +302,7 @@ def main() -> None:
     uncached.start()
     outcomes.start()
     hosts.start()
+    notification_worker.start()
     materialize_stop = threading.Event()
     threading.Thread(
         target=_run_new_domain_materializer,
@@ -341,6 +349,7 @@ def main() -> None:
         udp_server.stop()
         tcp_server.stop()
         state.stop()
+        notification_worker.stop()
         buffer.stop()
         stats.stop()
         requests.stop()

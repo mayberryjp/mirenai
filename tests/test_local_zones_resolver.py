@@ -9,6 +9,7 @@ from mirenai.domain.clientrequests import ClientRequestBuffer
 from mirenai.domain.clientstats import ClientStatsBuffer
 from mirenai.domain.foreignclients import ForeignClientBuffer
 from mirenai.domain.localzones import LocalRecord, parse_zone
+from mirenai.domain.notifications import NotificationBuffer
 from mirenai.domain.policy import PolicyRule
 from mirenai.domain.querybuffer import QueryBuffer
 from mirenai.domain.queryevents import QueryEventBuffer
@@ -48,6 +49,7 @@ def _resolver(
         ForeignClientBuffer(flush=flush, flush_seconds=3600),
         UncacheableBuffer(flush=flush, flush_seconds=3600),
         CacheOutcomeBuffer(flush=flush, flush_seconds=3600),
+        NotificationBuffer(flush=flush),
     )
 
 

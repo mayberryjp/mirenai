@@ -6,10 +6,12 @@ from ipaddress import ip_address, ip_network
 import re
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from mirenai.domain.blocklist import normalize_override_domain
 from mirenai.domain.policy import VALID_ACTIONS, WILDCARD
+from mirenai.domain.notifications import normalize_query_type_flags
+from mirenai.integrations.discord import validate_webhook_url
 
 _VALID_PROTOCOLS = {"udp", "tcp"}
 _VALID_DEFAULT_ACTIONS = {"deny", "forward"}
@@ -240,6 +242,16 @@ class HostUpdate(BaseModel):
     icon: str | None = None
     excluded_from_blocklist: bool | None = None
     flag_new_domains: bool | None = None
+    new_domain_monitoring: bool | None = None
+
+    @model_validator(mode="after")
+    def _validate_monitoring_alias(self) -> HostUpdate:
+        if (
+            self.flag_new_domains is not None and self.new_domain_monitoring is not None
+            and self.flag_new_domains != self.new_domain_monitoring
+        ):
+            raise ValueError("flag_new_domains and new_domain_monitoring must agree")
+        return self
 
     @field_validator("device_name")
     @classmethod
@@ -280,6 +292,19 @@ class SettingsUpdate(BaseModel):
     log_queries: bool | None = None
     ipv6_enabled: bool | None = None
     drop_private_ptr: bool | None = None
+    discord_notifications_enabled: bool = False
+    discord_webhook_url: str = ""
+    discord_query_types: dict[str, StrictBool] = Field(default_factory=dict)
+
+    @field_validator("discord_query_types")
+    @classmethod
+    def _validate_discord_query_types(cls, value: dict[str, bool]) -> dict[str, bool]:
+        return normalize_query_type_flags(value)
+
+    @field_validator("discord_webhook_url")
+    @classmethod
+    def _validate_discord_webhook(cls, value: str) -> str:
+        return validate_webhook_url(value)
 
     @field_validator("default_action")
     @classmethod

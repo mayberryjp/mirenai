@@ -11,7 +11,9 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
+from mirenai.domain.policy import ACTION_DENY
 from mirenai.logging import get_logger
 
 log = get_logger("dns.querybuffer")
@@ -25,6 +27,9 @@ class QueryAgg:
     count: int
     last_action: str
     last_response: str
+    denied_count: int = 0
+    denied_first_seen: datetime | None = None
+    denied_last_seen: datetime | None = None
 
 
 @dataclass
@@ -32,6 +37,9 @@ class _Counter:
     count: int
     last_action: str
     last_response: str
+    denied_count: int = 0
+    denied_first_seen: datetime | None = None
+    denied_last_seen: datetime | None = None
 
 
 FlushCallback = Callable[[list[QueryAgg]], None]
@@ -50,11 +58,18 @@ class QueryBuffer:
         with self._lock:
             counter = self._data.get(key)
             if counter is None:
-                self._data[key] = _Counter(count=1, last_action=action, last_response=response)
+                counter = _Counter(count=1, last_action=action, last_response=response)
+                self._data[key] = counter
             else:
                 counter.count += 1
                 counter.last_action = action
                 counter.last_response = response
+            if action == ACTION_DENY:
+                now = datetime.now()
+                counter.denied_count += 1
+                if counter.denied_first_seen is None:
+                    counter.denied_first_seen = now
+                counter.denied_last_seen = now
 
     def flush(self) -> None:
         with self._lock:
@@ -70,6 +85,9 @@ class QueryBuffer:
                 count=counter.count,
                 last_response=counter.last_response,
                 last_action=counter.last_action,
+                denied_count=counter.denied_count,
+                denied_first_seen=counter.denied_first_seen,
+                denied_last_seen=counter.denied_last_seen,
             )
             for key, counter in snapshot.items()
         ]

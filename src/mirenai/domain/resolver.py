@@ -43,6 +43,7 @@ from mirenai.domain.policy import (
     normalize_domain,
     select_policy,
 )
+from mirenai.domain.notifications import NotificationBuffer
 from mirenai.domain.querybuffer import QueryBuffer
 from mirenai.domain.queryevents import QueryEventBuffer
 from mirenai.domain.state import RuntimeSettings, RuntimeState, UpstreamServer
@@ -135,6 +136,7 @@ class DnsResolver:
         foreign: ForeignClientBuffer,
         uncached: UncacheableBuffer,
         outcomes: CacheOutcomeBuffer,
+        notifications: NotificationBuffer,
     ) -> None:
         self._state = state
         self._cache = cache
@@ -146,6 +148,7 @@ class DnsResolver:
         self._foreign = foreign
         self._uncached = uncached
         self._outcomes = outcomes
+        self._notifications = notifications
 
     def is_trusted(self, client_ip: str) -> bool:
         """Whether a query from ``client_ip`` should be answered at all."""
@@ -198,6 +201,11 @@ class DnsResolver:
         self._buffer.add(client_ip, qname, qtype_name, result, answer)
         self._stats.add(client_ip, result)
         self._requests.add(client_ip, qname, qtype_name)
+        self._notifications.add(
+            client_ip, qname, qtype_name, result, _rcode_name(reply.header.rcode),
+            settings.discord_notifications_enabled,
+            settings.discord_query_types.get(qtype_name, True),
+        )
         self._events.add(
             client_ip, qname, qtype_name, _rcode_name(reply.header.rcode), answer
         )

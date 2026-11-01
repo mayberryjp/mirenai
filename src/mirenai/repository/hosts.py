@@ -18,8 +18,10 @@ from mirenai.repository.client_stats import sum_total_by_client
 from mirenai.repository.models import (
     ClientHourlyStat,
     ClientRequest,
+    DomainNotification,
     Host,
     Policy,
+    PolicyDeniedQuery,
     QueryLog,
 )
 
@@ -33,6 +35,7 @@ def _to_dict(host: Host) -> dict[str, Any]:
         "mac_address": host.mac_address,
         "excluded_from_blocklist": host.excluded_from_blocklist,
         "flag_new_domains": host.flag_new_domains,
+        "new_domain_monitoring": host.flag_new_domains,
         "query_count": host.query_count,
         "first_seen": host.first_seen.isoformat(),
         "last_seen": host.last_seen.isoformat(),
@@ -51,6 +54,11 @@ def _attach_recent_totals(hosts: list[dict[str, Any]]) -> None:
 def load_known_hosts() -> set[str]:
     with hosts_session_scope() as session:
         return set(session.scalars(select(Host.ip)).all())
+
+
+def load_device_name(ip: str) -> str | None:
+    with hosts_session_scope() as session:
+        return session.scalar(select(Host.device_name).where(Host.ip == ip))
 
 
 def load_blocklist_excluded() -> frozenset[str]:
@@ -122,6 +130,8 @@ def update_host(host_id: int, data: dict[str, Any]) -> dict[str, Any] | None:
             host.excluded_from_blocklist = data["excluded_from_blocklist"]
         if data.get("flag_new_domains") is not None:
             host.flag_new_domains = data["flag_new_domains"]
+        if data.get("new_domain_monitoring") is not None:
+            host.flag_new_domains = data["new_domain_monitoring"]
         session.flush()
         result = _to_dict(host)
     _attach_recent_totals([result])
@@ -158,6 +168,8 @@ def delete_host(host_id: int) -> bool:
     with session_scope() as session:
         session.execute(delete(ClientHourlyStat).where(ClientHourlyStat.client == ip))
         session.execute(delete(ClientRequest).where(ClientRequest.client == ip))
+        session.execute(delete(DomainNotification).where(DomainNotification.client == ip))
         session.execute(delete(QueryLog).where(QueryLog.client == ip))
+        session.execute(delete(PolicyDeniedQuery).where(PolicyDeniedQuery.client == ip))
         session.execute(delete(Policy).where(Policy.client == ip))
     return True

@@ -2,12 +2,13 @@ from typing import Any
 
 from bottle import Bottle, request
 
-from mirenai.api.errors import read_int_query, read_pagination
+from mirenai.api.errors import error, read_int_query, read_pagination
 from mirenai.repository import blocklists as blocklists_repo
 from mirenai.repository import query_log as repo
 
 # Domains returned by GET /queries/top-blocked when no ?limit is given.
 _DEFAULT_TOP_BLOCKED = 20
+_DEFAULT_TOP_DENIED = 20
 
 
 def register_query_routes(app: Bottle) -> None:
@@ -44,6 +45,23 @@ def register_query_routes(app: Bottle) -> None:
             row["clients"] = clients.get(row["domain"], [])
             row["blocklists"] = sources[row["domain"]]
         return {"status": "ok", "domains": blocked, "total": len(blocked)}
+
+    @app.get("/queries/top-denied")
+    def top_denied_domains() -> dict[str, Any]:
+        limit, err = read_int_query("limit")
+        if err is not None:
+            return err
+        if limit is not None and limit < 1:
+            return error("validation_error", "Invalid request", 422, "limit must be at least 1")
+        top = limit if limit is not None else _DEFAULT_TOP_DENIED
+        client = (request.query.get("client") or "").strip() or None
+        rows = repo.aggregate_domain_totals(denied_only=True, limit=top, client=client)
+        clients = repo.clients_for_domains(
+            [row["domain"] for row in rows], denied_only=True, client=client
+        )
+        for row in rows:
+            row["clients"] = clients.get(row["domain"], [])
+        return {"status": "ok", "domains": rows, "total": len(rows)}
 
     @app.delete("/queries")
     def reset_queries() -> dict[str, Any]:

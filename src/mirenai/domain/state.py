@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from mirenai.domain.localzones import LocalRecord, LocalRecords
 from mirenai.domain.network import NetworkFilter
+from mirenai.domain.notifications import default_query_type_flags
 from mirenai.domain.policy import PolicyRule
 from mirenai.logging import get_logger
 
@@ -43,6 +44,9 @@ class RuntimeSettings:
     log_queries: bool = True
     ipv6_enabled: bool = True
     drop_private_ptr: bool = True
+    discord_notifications_enabled: bool = False
+    discord_webhook_url: str = ""
+    discord_query_types: dict[str, bool] = field(default_factory=default_query_type_flags)
 
 
 SettingsLoader = Callable[[], RuntimeSettings]

@@ -15,7 +15,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mirenai.db import session_scope
 from mirenai.domain.querybuffer import QueryAgg
-from mirenai.repository.models import QueryLog
+from mirenai.repository.models import PolicyDeniedQuery, QueryLog
 
 # SQLite caps host parameters per statement; chunk domain IN() lookups to stay under it.
 _DOMAIN_CHUNK = 500
@@ -58,6 +58,28 @@ def record_queries(rows: list[QueryAgg]) -> None:
                 },
             )
             session.execute(stmt)
+            if row.denied_count:
+                if row.denied_first_seen is None or row.denied_last_seen is None:
+                    raise ValueError("policy-denied aggregates require first/last denial timestamps")
+                denied_stmt = sqlite_insert(PolicyDeniedQuery).values(
+                    client=row.client, domain=row.domain, qtype=row.qtype,
+                    count=row.denied_count,
+                    first_seen=row.denied_first_seen, last_seen=row.denied_last_seen,
+                )
+                session.execute(
+                    denied_stmt.on_conflict_do_update(
+                        index_elements=["client", "domain", "qtype"],
+                        set_={
+                            "count": PolicyDeniedQuery.count + denied_stmt.excluded.count,
+                            "first_seen": func.min(
+                                PolicyDeniedQuery.first_seen, denied_stmt.excluded.first_seen
+                            ),
+                            "last_seen": func.max(
+                                PolicyDeniedQuery.last_seen, denied_stmt.excluded.last_seen
+                            ),
+                        },
+                    )
+                )
 
 
 def _escape_like(value: str) -> str:
@@ -113,26 +135,35 @@ def reset_queries() -> int:
     with session_scope() as session:
         # Session.execute(DELETE) is typed Result but returns CursorResult at runtime.
         result = cast(CursorResult[Any], session.execute(delete(QueryLog)))
+        session.execute(delete(PolicyDeniedQuery))
         return result.rowcount or 0
 
 
-def aggregate_domain_totals() -> list[dict[str, Any]]:
+def aggregate_domain_totals(
+    *, denied_only: bool = False, limit: int | None = None, client: str | None = None,
+) -> list[dict[str, Any]]:
     """Aggregate the query log by domain, most-queried first.
 
     One row per domain: the summed ``count`` across every client and query type,
     the earliest ``first_seen`` and the latest ``last_seen``.
+    ``denied_only`` selects actual denial totals rather than all-query totals.
     """
-    total = func.sum(QueryLog.count)
+    model = PolicyDeniedQuery if denied_only else QueryLog
+    total = func.sum(model.count)
     stmt = (
         select(
-            QueryLog.domain,
+            model.domain,
             total.label("count"),
-            func.min(QueryLog.first_seen).label("first_seen"),
-            func.max(QueryLog.last_seen).label("last_seen"),
+            func.min(model.first_seen).label("first_seen"),
+            func.max(model.last_seen).label("last_seen"),
         )
-        .group_by(QueryLog.domain)
-        .order_by(total.desc(), QueryLog.domain)
+        .group_by(model.domain)
+        .order_by(total.desc(), model.domain)
     )
+    if client is not None:
+        stmt = stmt.where(model.client == client)
+    if limit is not None:
+        stmt = stmt.limit(limit)
     with session_scope() as session:
         rows = session.execute(stmt).all()
         return [
@@ -146,29 +177,34 @@ def aggregate_domain_totals() -> list[dict[str, Any]]:
         ]
 
 
-def clients_for_domains(domains: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
+def clients_for_domains(
+    domains: Sequence[str], *, denied_only: bool = False, client: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     """Per-domain client breakdown for ``domains``, most-active client first.
 
     Returns a mapping from each domain to a list of ``{client, count}`` with the
     summed query ``count`` per client across query types. Domains with no rows in
-    the query log are omitted.
+    the selected log are omitted. ``denied_only`` uses actual denial counts.
     """
     if not domains:
         return {}
-    total = func.sum(QueryLog.count)
+    model = PolicyDeniedQuery if denied_only else QueryLog
+    total = func.sum(model.count)
     ordered = list(domains)
     result: dict[str, list[dict[str, Any]]] = {}
     with session_scope() as session:
         for start in range(0, len(ordered), _DOMAIN_CHUNK):
             chunk = ordered[start : start + _DOMAIN_CHUNK]
             stmt = (
-                select(QueryLog.domain, QueryLog.client, total.label("count"))
-                .where(QueryLog.domain.in_(chunk))
-                .group_by(QueryLog.domain, QueryLog.client)
-                .order_by(QueryLog.domain, total.desc(), QueryLog.client)
+                select(model.domain, model.client, total.label("count"))
+                .where(model.domain.in_(chunk))
+                .group_by(model.domain, model.client)
+                .order_by(model.domain, total.desc(), model.client)
             )
-            for domain, client, count in session.execute(stmt).all():
+            if client is not None:
+                stmt = stmt.where(model.client == client)
+            for domain, row_client, count in session.execute(stmt).all():
                 result.setdefault(domain, []).append(
-                    {"client": client, "count": int(count or 0)}
+                    {"client": row_client, "count": int(count or 0)}
                 )
     return result

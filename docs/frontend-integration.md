@@ -549,8 +549,84 @@ Optional `limit=<n>` caps how many domains are returned (the Top X; default `20`
 
 `total` is the number of domains returned (after the Top X cap), not a pagination total. Errors: `422 validation_error` if `limit` is not an integer.
 
+#### `GET /queries/top-denied`
+Top domains by **actual policy-denied query count**, across clients and query
+types. Includes action `deny` from explicit policies, client modes, and site-wide
+default deny. Does **not** include action `blocklist`, upstream NXDOMAIN/errors,
+IPv6 NODATA, overrides/sinkholes, local/forwarded responses, or foreign-network
+drops. This is historical traffic, not a list of currently enabled deny rules.
+
+**Query parameters:**
+
+| parameter | type | default | notes |
+| --- | --- | --- | --- |
+| `limit` | positive integer | `20` | maximum number of domains returned; no offset pagination |
+| `client` | string | all clients | exact source IP filter, applied before aggregation/ranking; whitespace trimmed; blank means all clients |
+
+**Response:** `200 { "status": "ok", "domains": [...], "total": N }`
+
+| field | type | notes |
+| --- | --- | --- |
+| `domain` | string | normalized queried domain, not the matched policy wildcard |
+| `count` | int | actual `deny` queries, summed across query types and selected clients |
+| `clients` | array | `{ "client": <ip>, "count": <denials> }`; only clients with denials |
+| `first_seen` | string (datetime) | first recorded **denial**, not first query of any action |
+| `last_seen` | string (datetime) | most recent recorded **denial**, unaffected by later allowed queries |
+
+Example request: `GET /queries/top-denied?limit=10`
+
+```json
+{
+  "status": "ok",
+  "domains": [
+    {
+      "domain": "denied.example.com",
+      "count": 15,
+      "clients": [
+        { "client": "10.0.0.5", "count": 10 },
+        { "client": "10.0.0.9", "count": 5 }
+      ],
+      "first_seen": "2026-11-01T08:00:00",
+      "last_seen": "2026-11-01T10:30:00"
+    }
+  ],
+  "total": 1
+}
+```
+
+Domains sort by denial count descending, then domain alphabetically for ties.
+Clients sort by denial count descending, then client IP string for ties.
+With `client`, all counts/timestamps are scoped to that IP, and each row's
+`clients` array contains only that client. `total` is the returned domain count
+after the limit, **not** an uncapped pagination total. Empty results return
+`{"status": "ok", "domains": [], "total": 0}`.
+
+Errors: `422 validation_error` if `limit` is not an integer or is below 1.
+Example for `limit=0`:
+
+```json
+{
+  "status": "error",
+  "code": "validation_error",
+  "error": "Invalid request",
+  "detail": "limit must be at least 1"
+}
+```
+
+**Counting/retention:** the resolver tracks denials separately, including mixed
+allow/deny batches; `QueryLog.count` and `last_action` are not used to approximate
+them. Denial history persists across restarts and policy edits and has no rolling
+time window. Counts start with this feature's deployment; pre-existing logs
+cannot be reconstructed accurately and are not backfilled. Updates arrive on
+the normal `query_flush_seconds` timer (default 5 seconds); timestamps use
+server/container local time. Query-type Discord flags and per-client new-domain
+monitoring do not affect denial recording. `DELETE /queries` clears denial
+history along with the regular query log; deleting a host removes its own history.
+
 #### `DELETE /queries`
 Resets (deletes) **all** query statistics. → `{ "status": "ok", "deleted": <count> }` where `deleted` is the number of rows removed.
+Also clears policy-denial counters used by `/queries/top-denied`. `deleted`
+continues to count regular query-log rows only, not the separate denial counters.
 
 > This endpoint has no id — it clears the entire log. Confirm in the UI before calling.
 
@@ -577,6 +653,9 @@ always present.
 | `log_queries`        | bool   | `true`   | enable/disable query logging                      |
 | `ipv6_enabled`       | bool   | `true`   | when `false`, every AAAA (IPv6) query is answered `NOERROR`/NODATA so clients fall back to A |
 | `drop_private_ptr`   | bool   | `true`   | when `true`, reverse (`PTR`) lookups for RFC1918 private IPs **not** defined in a local zone are answered `NOERROR`/NODATA and skipped from the query log/stats, so noisy private-range PTR scans don't flood the logs |
+| `discord_notifications_enabled` | bool | `false` | send first-seen client/domain alerts to Discord; enabling requires a webhook URL |
+| `discord_webhook_url` | string | `""` | HTTPS Discord webhook URL, including its secret token; empty string clears it |
+| `discord_query_types` | object of booleans | all recognized types `true` | per-query-type alert flags; keys such as `A`, `AAAA`, `PTR`, `MX`, `TXT`, `CNAME`, `NS`, `SOA`, `SRV`, `CAA`, `HTTPS`, `SVCB` |
 
 #### `GET /settings`
 → `{ "status": "ok", "settings": { /* all keys above */ } }`
@@ -587,6 +666,44 @@ Partial update — send only the keys you want to change. → `{ "status": "ok",
 { "cache_enabled": false, "default_action": "forward" }
 ```
 Validation: `default_action` must be `deny` or `forward`. Unknown keys are rejected (`422`). There is no per-field range validation on the numeric settings beyond type — send sensible values. Always returns `200` with the full merged settings; there is no `404`.
+
+Discord fields cannot be `null`. The webhook URL is trimmed and must be an HTTPS
+URL on `discord.com` or `discordapp.com` with path
+`/api/webhooks/{numeric_id}/{token}` (or `/api/vN/webhooks/...`).
+Query strings, fragments, credentials, and custom ports are rejected.
+Enabling without a URL, or clearing the URL while still enabled, returns
+`422 validation_error`; the entire update remains unapplied.
+Disable and clear together with
+`{"discord_notifications_enabled": false, "discord_webhook_url": ""}`.
+The response contains the full URL: treat it as a secret, not telemetry.
+
+`discord_query_types` is a nested partial update: send
+`{"discord_query_types": {"PTR": false, "AAAA": true, "MX": false}}` to change
+only those flags. Omitted entries retain their saved values; `{}` is a no-op.
+`GET /settings` returns flags for every recognized DNS type (all `true` by
+default), plus any configured numeric types. Build frontend type controls from
+those returned keys instead of hardcoding only A/PTR/AAAA. Keys are trimmed and
+uppercased; `TYPE<number>` is accepted for numeric codes 0 through 65535 and
+canonicalized to a known name when available (`TYPE1` becomes `A`).
+Unknown names, duplicate normalized keys, `null`, and non-boolean flag values
+are rejected with `422 validation_error`. Use `AAAA`, not `AAA`.
+All flags can be disabled; query-type filtering affects Discord only.
+
+Alerts are asynchronous and independent of the hourly new-domain feed. They
+report the **first eligible** query's allow/block/error outcome, deduplicate across query
+types and restarts, and respect the host monitoring switch.
+Messages use an outcome icon and a single sentence with bold client/domain
+labels. The client label uses the current saved `device_name` (Sando's
+`local_description`) followed by the IP, or just the IP when unnamed.
+A query of a disabled type does not consume the pair's eligibility: its first
+later enabled-type query can alert. Enabling a type alone does not replay queries.
+Disabling a type suppresses pending alerts of that type, except requests already
+in flight; the pair remains eligible for a later enabled-type query.
+Historical observations and pairs seen with global notifications/client
+monitoring disabled are not replayed. A `200` settings response confirms
+configuration storage, not successful delivery to Discord.
+See [Discord notifications frontend spec](discord-notifications-frontend.md)
+for the UI contract, message semantics, delivery limitations, and acceptance criteria.
 
 ---
 
@@ -609,7 +726,9 @@ subject to the blocklist.
 
 **New-domain monitoring is per-client:** every client's newly-seen domains appear
 in the recent-new-domains feed by default. Set `flag_new_domains` to `false` on a
-host to hide that client's new domains from `GET /stats/new-domains/recent`.
+host to hide that client's new domains from `GET /stats/new-domains/recent`
+and suppress Discord alerts. `new_domain_monitoring` is an equivalent alias;
+both response fields always carry the same value.
 
 **Host object:**
 | field         | type              | notes                                              |
@@ -620,7 +739,8 @@ host to hide that client's new domains from `GET /stats/new-domains/recent`.
 | `icon`        | string \| null    | icon key (e.g. from Sando); `null` until set        |
 | `mac_address` | string \| null    | MAC address synced from Sando; `null` until set     |
 | `excluded_from_blocklist` | bool  | when `true`, this client's queries bypass the blocklist (default `false`) |
-| `flag_new_domains` | bool  | when `false`, this client's newly-seen domains are hidden from `GET /stats/new-domains/recent` (default `true`) |
+| `flag_new_domains` | bool  | when `false`, hide new domains from the recent feed and suppress Discord notifications (default `true`) |
+| `new_domain_monitoring` | bool | alias of `flag_new_domains`; reads and writes the same setting |
 | `query_count` | int               | total queries seen from this IP (all-time); server-maintained |
 | `500h_queries` | int              | queries from this IP in the trailing 500 hours (summed from the per-client hourly stats); server-maintained, rolls off with the 500h stats retention |
 | `first_seen`  | string (datetime) | server-recorded                                    |
@@ -640,6 +760,9 @@ Set or clear the device name and/or icon, toggle blocklist exclusion, or toggle 
 { "device_name": "living-room-tv", "icon": "television_icon", "excluded_from_blocklist": true }
 ```
 Validation: `device_name` and `icon` are each a string of at most 255 characters, or `null`. Whitespace is trimmed; an empty/blank string is stored as `null` (so sending `""` or `null` clears that field). `excluded_from_blocklist` and `flag_new_domains` are booleans (`null` is ignored). Any field may be sent on its own. `ip`, `mac_address`, `query_count`, `500h_queries`, `first_seen`, `last_seen`, and `id` are read-only — sending any of them (or any other key) is rejected with `422`.
+`new_domain_monitoring` also accepts a boolean (`null` is ignored).
+If both monitoring names are supplied with non-null values, they must agree,
+otherwise the update is rejected with `422 validation_error`.
 
 #### `POST /hosts/{id}/sync`
 Sync this host's `device_name`, `icon` and `mac_address` from the configured Sando instance (looks the host's IP up in Sando and copies its friendly name, icon and MAC address). → `200 { "status": "ok", "host": {...} }` with the updated host.
@@ -648,7 +771,7 @@ Sync this host's `device_name`, `icon` and `mac_address` from the configured San
 - `502 upstream_error` — Sando could not be reached or returned an unexpected reply; `detail` explains why.
 
 #### `DELETE /hosts/{id}`
-Completely removes the host: deletes the host row **and** every row keyed to its IP across the other tables — per-client hourly stats, request objects, query-log entries, and policies (including its client mode). → `200 { "status": "ok", "deleted": <id> }` or `404 not_found`. (The DNS server will re-create the host — and re-seed its default policy — on the device's next query.)
+Completely removes the host: deletes the host row **and** every row keyed to its IP across the other tables — per-client hourly stats, request objects, query-log entries, policy-denial counters, policies (including its client mode), and the first-seen notification ledger/pending alerts. → `200 { "status": "ok", "deleted": <id> }` or `404 not_found`. (The DNS server will re-create the host — and re-seed its default policy — on the device's next query.)
 
 ---
 

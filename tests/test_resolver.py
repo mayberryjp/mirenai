@@ -9,6 +9,7 @@ from mirenai.domain.clientrequests import ClientRequestBuffer
 from mirenai.domain.clientstats import ClientStatAgg, ClientStatsBuffer
 from mirenai.domain.foreignclients import ForeignClientAgg, ForeignClientBuffer
 from mirenai.domain.localzones import LocalRecord
+from mirenai.domain.notifications import NotificationBuffer
 from mirenai.domain.policy import PolicyRule
 from mirenai.domain.querybuffer import QueryAgg, QueryBuffer
 from mirenai.domain.queryevents import QueryEvent, QueryEventBuffer
@@ -33,6 +34,7 @@ def _make_resolver(
     foreign: ForeignClientBuffer | None = None,
     uncached: UncacheableBuffer | None = None,
     outcomes: CacheOutcomeBuffer | None = None,
+    notifications: NotificationBuffer | None = None,
 ) -> DnsResolver:
     effective = settings or RuntimeSettings()
     state = RuntimeState(
@@ -64,6 +66,7 @@ def _make_resolver(
         foreign_buffer,
         uncached_buffer,
         outcomes_buffer,
+        notifications or NotificationBuffer(flush=lambda rows: None),
     )
 
 
