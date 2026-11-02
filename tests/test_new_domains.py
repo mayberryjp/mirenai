@@ -7,6 +7,7 @@ from webtest import TestApp
 from mirenai import config, db
 from mirenai.api.app import create_app
 from mirenai.db import session_scope
+from mirenai.domain.clientrequests import ClientRequestAgg
 from mirenai.repository import blocklists as blocklists_repo
 from mirenai.repository import client_requests as repo
 from mirenai.repository import hosts as hosts_repo
@@ -146,6 +147,38 @@ def test_recent_new_domains_respects_limit(temp_config_db: None) -> None:
 
     assert len(rows) == 3
     assert [r["domain"] for r in rows] == ["d0.com", "d1.com", "d2.com"]
+
+
+def test_recent_route_first_seen_is_per_client_domain_pair(temp_config_db: None) -> None:
+    db.BlocklistBase.metadata.create_all(db.get_blocklist_engine())
+    db.HostsBase.metadata.create_all(db.get_hosts_engine())
+    now = datetime.now()
+    older = now - timedelta(hours=3)
+    newer = now - timedelta(minutes=5)
+    _add("10.0.0.5", "shared.com", "A", older)
+    _add("10.0.0.9", "shared.com", "AAAA", newer)
+    _add("10.0.0.9", "shared.com", "A", now)
+    repo.record_client_requests([
+        ClientRequestAgg(client="10.0.0.9", domain="shared.com", qtype="AAAA", hits=2),
+    ])
+    _add_query("10.0.0.5", "shared.com", "A", "deny", now)
+    _add_query("10.0.0.9", "shared.com", "AAAA", "forward", newer)
+    app = TestApp(create_app())
+
+    response = app.get("/stats/new-domains/recent").json
+
+    assert response["status"] == "ok"
+    assert response["total"] == 2
+    assert [
+        (row["client"], row["domain"], row["first_seen"], row["last_action"])
+        for row in response["domains"]
+    ] == [
+        ("10.0.0.9", "shared.com", newer.isoformat(), "forward"),
+        ("10.0.0.5", "shared.com", older.isoformat(), "deny"),
+    ]
+    limited = app.get("/stats/new-domains/recent?limit=1").json
+    assert limited["total"] == 1
+    assert limited["domains"] == response["domains"][:1]
 
 
 def test_recent_new_domains_includes_last_action(temp_config_db: None) -> None:

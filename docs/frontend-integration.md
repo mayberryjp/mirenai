@@ -907,6 +907,9 @@ The flat feed behind `GET /stats/new-domains`: the most recently first-seen
 `(client, domain)` pairs, newest first. One row per `(client, domain)` dated by
 the earliest `first_seen` across query types (so `a.com/A` and `a.com/AAAA`
 collapse to a single row). Read-only.
+The same domain queried by different clients produces separate rows with
+independent `first_seen` timestamps; another client's earlier query does not
+affect this client's timestamp.
 
 **Row object:**
 | field         | type              | notes                                                   |

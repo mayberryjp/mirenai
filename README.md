@@ -104,6 +104,8 @@ list's next refresh rather than at query time.
 **New-domain monitoring is per-client.** A client's newly-seen domains show up in
 `GET /stats/new-domains/recent` by default; clear `flag_new_domains` on its host to
 hide that client's new domains from the feed.
+First-seen times are scoped to each `(client, domain)` pair: a domain already
+seen by one client is still new when another client first queries it.
 `new_domain_monitoring` is an API alias for `flag_new_domains`; setting either
 to `false` also suppresses that client's Discord notifications.
 
