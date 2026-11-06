@@ -1,8 +1,9 @@
 """In-memory aggregation of per-client DNS request objects (query names).
 
 Counts each ``(client, domain, qtype)`` in memory and flushes aggregated rows to
-the database on an hourly timer, where they upsert (``hits += n``, ``last_seen``
-refreshed). Mirrors the query-log buffer but batches hourly into its own table.
+the database at the query-log flush interval, where they upsert (``hits += n``,
+``last_seen`` refreshed). Uses its own table to retain first-seen history
+independently of query-log resets.
 """
 
 from __future__ import annotations

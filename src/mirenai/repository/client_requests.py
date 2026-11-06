@@ -1,7 +1,7 @@
 """Persistence for per-client DNS request objects (query names).
 
-Aggregated in memory by the DNS server and flushed here in an hourly batch. Each
-flush upserts on ``(client, domain, qtype)``: on conflict the stored ``hits`` is
+Aggregated in memory by the DNS server and flushed at the query-log interval.
+Each flush upserts on ``(client, domain, qtype)``: on conflict the stored ``hits`` is
 incremented and ``last_seen`` refreshed (``first_seen`` is set once on insert).
 """
 

@@ -7,11 +7,15 @@ from webtest import TestApp
 from mirenai import config, db
 from mirenai.api.app import create_app
 from mirenai.db import session_scope
-from mirenai.domain.clientrequests import ClientRequestAgg
+from mirenai.domain.clientrequests import ClientRequestAgg, ClientRequestBuffer, ClientRequestFlush
+from mirenai.domain.querybuffer import QueryBuffer
+from mirenai.domain.state import RuntimeSettings, RuntimeState
 from mirenai.repository import blocklists as blocklists_repo
 from mirenai.repository import client_requests as repo
 from mirenai.repository import hosts as hosts_repo
+from mirenai.repository import query_log as query_log_repo
 from mirenai.repository.models import ClientRequest, QueryLog
+from mirenai.workers import dns_server
 
 
 @pytest.fixture()
@@ -147,6 +151,65 @@ def test_recent_new_domains_respects_limit(temp_config_db: None) -> None:
 
     assert len(rows) == 3
     assert [r["domain"] for r in rows] == ["d0.com", "d1.com", "d2.com"]
+
+
+@pytest.mark.parametrize("flush_seconds", [5, 17])
+def test_worker_recent_domains_use_query_flush_interval(
+    monkeypatch: pytest.MonkeyPatch, flush_seconds: int
+) -> None:
+    state = RuntimeState(
+        load_settings=lambda: RuntimeSettings(query_flush_seconds=flush_seconds),
+        load_policies=list,
+        load_upstreams=list,
+        load_blocklist=frozenset,
+        load_blocklist_excluded=frozenset,
+        load_trusted_networks=list,
+        load_local_records=list,
+    )
+    monkeypatch.setattr(dns_server, "_build_state", lambda: state)
+    monkeypatch.setattr(dns_server, "seed_seen_domains", lambda: None)
+    monkeypatch.setattr(dns_server, "configure_logging", lambda level: None)
+
+    class StartupChecked(Exception):
+        pass
+
+    class CheckedRequests(ClientRequestBuffer):
+        def __init__(self, flush: ClientRequestFlush, flush_seconds: int) -> None:
+            assert flush is repo.record_client_requests
+            assert flush_seconds == state.settings.query_flush_seconds
+            raise StartupChecked
+
+    monkeypatch.setattr(dns_server, "ClientRequestBuffer", CheckedRequests)
+    with pytest.raises(StartupChecked):
+        dns_server.main()
+
+
+def test_recent_route_includes_domain_after_request_flush(temp_config_db: None) -> None:
+    db.BlocklistBase.metadata.create_all(db.get_blocklist_engine())
+    db.HostsBase.metadata.create_all(db.get_hosts_engine())
+    queries = QueryBuffer(flush=query_log_repo.record_queries, flush_seconds=5)
+    requests = ClientRequestBuffer(flush=repo.record_client_requests, flush_seconds=5)
+    app = TestApp(create_app())
+    domain = "mosquitto.office.example.com"
+    for qtype in ("A", "AAAA"):
+        queries.add("10.0.0.5", domain, qtype, "forward", "10.0.0.2")
+        requests.add("10.0.0.5", domain, qtype)
+    queries.flush()
+    requests.flush()
+
+    host_queries = app.get("/queries?client=10.0.0.5").json["queries"]
+    recent = app.get("/stats/new-domains/recent").json["domains"]
+    assert {row["domain"] for row in host_queries} == {domain}
+    assert len(recent) == 1
+    assert recent[0]["client"] == "10.0.0.5"
+    assert recent[0]["domain"] == domain
+    assert recent[0]["last_action"] == "forward"
+    first_seen = recent[0]["first_seen"]
+
+    requests.add("10.0.0.5", domain, "A")
+    requests.flush()
+    assert app.get("/stats/new-domains/recent").json["domains"][0]["first_seen"] == first_seen
+    assert repo.list_new_domain_counts() == []  # no hourly materialization needed
 
 
 def test_recent_route_first_seen_is_per_client_domain_pair(temp_config_db: None) -> None:

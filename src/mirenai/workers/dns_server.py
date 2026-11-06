@@ -58,7 +58,6 @@ log = get_logger("dns.server")
 
 _DB_RETRY_SECONDS = 3
 _STATS_FLUSH_SECONDS = 3600
-_REQUESTS_FLUSH_SECONDS = 3600
 _NEW_DOMAIN_MATERIALIZE_SECONDS = 3600
 _CACHE_SNAPSHOT_SECONDS = 30
 
@@ -243,7 +242,7 @@ def main() -> None:
     buffer = QueryBuffer(flush=record_queries, flush_seconds=runtime.query_flush_seconds)
     stats = ClientStatsBuffer(flush=record_client_stats, flush_seconds=_STATS_FLUSH_SECONDS)
     requests = ClientRequestBuffer(
-        flush=record_client_requests, flush_seconds=_REQUESTS_FLUSH_SECONDS
+        flush=record_client_requests, flush_seconds=runtime.query_flush_seconds
     )
     rtt = UpstreamRttBuffer(
         flush=record_upstream_rtt,

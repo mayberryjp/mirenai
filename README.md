@@ -106,6 +106,10 @@ list's next refresh rather than at query time.
 hide that client's new domains from the feed.
 First-seen times are scoped to each `(client, domain)` pair: a domain already
 seen by one client is still new when another client first queries it.
+The recent feed updates every `query_flush_seconds` (5 seconds by default),
+on the same cadence as the query log, rather than waiting for the hourly
+new-domain chart. These are separate background flushes, so brief differences
+between the feed and query log are possible.
 `new_domain_monitoring` is an API alias for `flag_new_domains`; setting either
 to `false` also suppresses that client's Discord notifications.
 

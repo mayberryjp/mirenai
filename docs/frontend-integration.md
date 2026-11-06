@@ -689,7 +689,7 @@ Unknown names, duplicate normalized keys, `null`, and non-boolean flag values
 are rejected with `422 validation_error`. Use `AAAA`, not `AAA`.
 All flags can be disabled; query-type filtering affects Discord only.
 
-Alerts are asynchronous and independent of the hourly new-domain feed. They
+Alerts are asynchronous and independent of the new-domain feed. They
 report the **first eligible** query's allow/block/error outcome, deduplicate across query
 types and restarts, and respect the host monitoring switch.
 Messages use an outcome icon and a single sentence with bold client/domain
@@ -911,6 +911,12 @@ The same domain queried by different clients produces separate rows with
 independent `first_seen` timestamps; another client's earlier query does not
 affect this client's timestamp.
 
+The feed reads request history flushed every `query_flush_seconds` (default
+5 seconds), on the same cadence as the query log; it does **not** wait for the
+hourly chart materialization. The two buffers flush independently, so a newly
+queried domain can briefly appear in one before the other. First-seen history
+is retained independently of query-log resets.
+
 **Row object:**
 | field         | type              | notes                                                   |
 | ------------- | ----------------- | ------------------------------------------------------- |
@@ -991,7 +997,8 @@ it has no rows yet).
 
 Per-client DNS request objects (query names) with a hit counter, one row per
 `(client, domain, qtype)`. The DNS server aggregates these in memory and writes
-them in an **hourly batch**. This resource is **read-only** — there are no
+them every `query_flush_seconds` (default **5 seconds**), on the same cadence
+as the query log. This resource is **read-only** — there are no
 create/update/delete endpoints.
 
 **Request object:**
@@ -1012,7 +1019,7 @@ List, paginated. → `{ "status": "ok", "requests": [...], "total": N }`
 
 **Filter (optional):** `client=<ip>` — only that client's request objects. Combines with `limit`/`offset`; e.g. `?client=10.0.0.5&limit=10` returns that client's top 10 objects by hits.
 
-> Like the query log, timestamps and hit counts reflect the hourly flush, so the most recent activity can be up to an hour behind. This table has no automatic retention cap — it grows with the number of distinct `(client, domain, qtype)` triples seen.
+> Timestamps and hit counts reflect the latest background flush, not individual query times. Activity normally appears within `query_flush_seconds` (default 5 seconds). This table has no automatic retention cap and survives query-log resets — it grows with the number of distinct `(client, domain, qtype)` triples seen.
 
 ---
 
