@@ -110,6 +110,11 @@ The recent feed updates every `query_flush_seconds` (5 seconds by default),
 on the same cadence as the query log, rather than waiting for the hourly
 new-domain chart. These are separate background flushes, so brief differences
 between the feed and query log are possible.
+`GET /queries` includes `domain_first_seen` from this same retained history,
+shared across query types for each `(client, domain)` pair and preserved when
+the query log is cleared. Host NEW badges should use this date, not the
+resettable query-log `first_seen`. If retained history has not been flushed yet,
+`domain_first_seen` is `null`; do not treat the domain as new until it is known.
 `new_domain_monitoring` is an API alias for `flag_new_domains`; setting either
 to `false` also suppresses that client's Discord notifications.
 

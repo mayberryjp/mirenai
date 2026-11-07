@@ -501,7 +501,8 @@ Per-client DNS query statistics, aggregated by `(client, domain, qtype)`.
 | `count`       | int               | number of times seen                          |
 | `last_action` | string \| null    | last action applied (`forward`/`override`/`deny`/`blocklist`/`local`) or `null` |
 | `last_response` | string \| null  | the answer returned on the most recent lookup — comma-joined rdata, e.g. `201.23.89.2` (empty string for an empty answer, e.g. `NXDOMAIN`/`NODATA`); `null` for rows recorded before this field existed |
-| `first_seen`  | string (datetime) |                                               |
+| `first_seen`  | string (datetime) | first seen for this query-log row; resets when the query log is cleared |
+| `domain_first_seen` | string (datetime) \| null | retained earliest first seen for this `(client, domain)`, across all query types; survives query-log resets |
 | `last_seen`   | string (datetime) |                                               |
 
 Ordering: by `last_seen` descending, then `id`.
@@ -510,6 +511,21 @@ Ordering: by `last_seen` descending, then `id`.
 List, paginated. → `{ "status": "ok", "queries": [...], "total": N }`
 
 Each row carries a `blocked` boolean: `true` when its `domain` (or any parent domain) is on an **enabled** blocklist, using the same suffix match the resolver applies. It reflects blocklist membership, not whether the query was actually blocked (see `last_action` for that).
+
+Each row also carries `domain_first_seen`, sourced from the same retained request
+history as `/stats/new-domains/recent`. A and AAAA rows for the same client/domain
+share the earliest date; other clients have independent dates. This field is
+included in both paginated and unpaginated responses, without changing query-log
+counts, ordering, or `first_seen`.
+
+**Host NEW badges:** use `domain_first_seen`, not query-log `first_seen`, with the
+same age cutoff and host monitoring setting used by the global NEW view. Use this
+field for any first-discovered display/sorting too. It is `null` when retained
+history is not available yet (the request and query buffers flush independently).
+In that case suppress the badge until a later poll supplies the timestamp; do
+not fall back to query-log `first_seen`. Do not infer newness from membership in
+the capped global recent feed. Client-side sorting only sorts fetched rows; this
+endpoint still paginates in `last_seen` order.
 
 Optional `search=<text>` query param filters server-side to rows where **`client` OR `domain`** contains `<text>` (case-insensitive substring; `%`/`_` are matched literally). `total` reflects the filtered count, so pagination stays correct. Combine with `limit`/`offset` as usual.
 

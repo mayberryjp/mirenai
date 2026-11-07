@@ -10,15 +10,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, cast
 
-from sqlalchemy import ColumnElement, CursorResult, delete, func, or_, select
+from sqlalchemy import ColumnElement, CursorResult, delete, func, or_, select, tuple_
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mirenai.db import session_scope
 from mirenai.domain.querybuffer import QueryAgg
-from mirenai.repository.models import PolicyDeniedQuery, QueryLog
+from mirenai.repository.models import ClientRequest, PolicyDeniedQuery, QueryLog
 
 # SQLite caps host parameters per statement; chunk domain IN() lookups to stay under it.
 _DOMAIN_CHUNK = 500
+_PAIR_CHUNK = 400
 
 
 def _to_dict(row: QueryLog) -> dict[str, Any]:
@@ -120,7 +121,28 @@ def list_queries(
         stmt = stmt.limit(limit).offset(offset)
     with session_scope() as session:
         rows = session.scalars(stmt).all()
-        return [_to_dict(row) for row in rows]
+        # Retained history lives in stats.db, so merge it after reading the query-log page.
+        pairs = list(dict.fromkeys((row.client, row.domain) for row in rows))
+        history: dict[tuple[str, str], str] = {}
+        for start in range(0, len(pairs), _PAIR_CHUNK):
+            history_stmt = (
+                select(
+                    ClientRequest.client, ClientRequest.domain,
+                    func.min(ClientRequest.first_seen),
+                )
+                .where(tuple_(ClientRequest.client, ClientRequest.domain).in_(
+                    pairs[start : start + _PAIR_CHUNK]
+                ))
+                .group_by(ClientRequest.client, ClientRequest.domain)
+            )
+            for ip, domain, first_seen in session.execute(history_stmt):
+                history[(ip, domain)] = first_seen.isoformat()
+        result = []
+        for row in rows:
+            data = _to_dict(row)
+            data["domain_first_seen"] = history.get((row.client, row.domain))
+            result.append(data)
+        return result
 
 
 def count_queries(search: str | None = None, client: str | None = None) -> int:
