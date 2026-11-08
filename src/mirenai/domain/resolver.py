@@ -197,6 +197,10 @@ class DnsResolver:
         else:
             reply, result = self._resolve_local_or_forward(request, settings, client_ip)
 
+        if not any(record.rtype == QTYPE.OPT for record in request.ar):
+            reply.ar = [record for record in reply.ar if record.rtype != QTYPE.OPT]
+            reply.set_header_qa()
+
         answer = _answer_summary(reply)
         self._buffer.add(client_ip, qname, qtype_name, result, answer)
         self._stats.add(client_ip, result)
@@ -349,7 +353,9 @@ class DnsResolver:
                 reply.header.id = request.header.id
                 remaining = max(0, int(entry.expires_at - time.monotonic()))
                 for record in (*reply.rr, *reply.auth, *reply.ar):
-                    record.ttl = remaining
+                    # OPT's TTL field holds EDNS control bits, not a lifetime.
+                    if record.rtype != QTYPE.OPT:
+                        record.ttl = remaining
                 return reply, "forward-cache"
 
         reply = self._forward(request, settings)

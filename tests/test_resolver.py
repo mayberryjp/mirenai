@@ -1,7 +1,7 @@
 from ipaddress import ip_address
 
 import pytest
-from dnslib import QTYPE, RCODE, RR, SOA, A, DNSRecord
+from dnslib import EDNS0, QTYPE, RCODE, RR, SOA, A, DNSRecord
 
 from mirenai.domain.cache import TTLCache
 from mirenai.domain.cacheoutcome import CacheOutcomeAgg, CacheOutcomeBuffer
@@ -176,6 +176,88 @@ def _soa_auth() -> RR:
             (2021010101, 7200, 3600, 1209600, 300),
         ),
     )
+
+
+@pytest.mark.parametrize("negative", [False, True])
+def test_cached_edns_preserves_control_bits_and_noedns_omits_opt(
+    monkeypatch: pytest.MonkeyPatch, negative: bool
+) -> None:
+    now = 1000.0
+    monkeypatch.setattr("mirenai.domain.resolver.time.monotonic", lambda: now)
+    resolver = _make_resolver(
+        [],
+        RuntimeSettings(cache_max_ttl=172800),
+        upstreams=[UpstreamServer("1.1.1.1", 53, "udp", 100)],
+    )
+    request = DNSRecord.question("example.com", "A")
+    request.add_ar(EDNS0(udp_len=1232, flags="do"))
+    upstream = request.reply()
+    if negative:
+        upstream.header.rcode = RCODE.NXDOMAIN
+        soa = _soa_auth()
+        soa.ttl = 86400
+        soa.rdata.times = (2021010101, 7200, 3600, 1209600, 86400)
+        upstream.add_auth(soa)
+    else:
+        upstream.add_answer(RR(request.q.qname, QTYPE.A, ttl=86400, rdata=A("1.2.3.4")))
+    upstream.add_ar(RR("ns.example.com", QTYPE.A, ttl=86400, rdata=A("1.2.3.5")))
+    upstream.add_ar(EDNS0(udp_len=1232, flags="do"))
+    sends = 0
+
+    def fake_send(self: DNSRecord, *a: object, **k: object) -> bytes:
+        nonlocal sends
+        sends += 1
+        return upstream.pack()
+
+    monkeypatch.setattr(DNSRecord, "send", fake_send)
+    fresh = DNSRecord.parse(resolver.handle(request, "10.0.0.1").pack())
+    assert fresh.ar[-1].ttl == 0x8000
+    now += 10
+    cached_request = DNSRecord.parse(request.pack())
+    cached_request.header.id = 42
+    cached = DNSRecord.parse(resolver.handle(cached_request, "10.0.0.1").pack())
+    opt = cached.ar[-1]
+    assert opt.rtype == QTYPE.OPT
+    assert opt.ttl == 0x8000  # Version 0, DO set, reserved bits clear.
+    assert opt.rclass == 1232
+    assert cached.header.id == 42
+    assert cached.header.rcode == upstream.header.rcode
+    assert cached.ar[0].ttl == 86390
+    assert (cached.auth if negative else cached.rr)[0].ttl == 86390
+
+    plain_request = DNSRecord.question("example.com", "A")
+    plain_request.header.id = 43
+    plain = DNSRecord.parse(resolver.handle(plain_request, "10.0.0.2").pack())
+    assert plain.header.id == 43
+    assert plain.header.rcode == upstream.header.rcode
+    assert all(record.rtype != QTYPE.OPT for record in plain.ar)
+    assert plain.header.ar == 1
+    assert str(plain.ar[0].rdata) == "1.2.3.5"
+    assert sends == 1
+    again = DNSRecord.parse(resolver.handle(request, "10.0.0.1").pack())
+    assert again.ar[-1].ttl == 0x8000
+    assert sends == 1
+
+
+@pytest.mark.parametrize("cache_enabled", [False, True])
+def test_noedns_forward_omits_unsolicited_opt(
+    monkeypatch: pytest.MonkeyPatch, cache_enabled: bool
+) -> None:
+    resolver = _make_resolver(
+        [],
+        RuntimeSettings(cache_enabled=cache_enabled),
+        upstreams=[UpstreamServer("1.1.1.1", 53, "udp", 100)],
+    )
+    request = DNSRecord.question("example.com", "A")
+    upstream = request.reply()
+    upstream.add_answer(RR(request.q.qname, QTYPE.A, ttl=300, rdata=A("1.2.3.4")))
+    upstream.add_ar(EDNS0(udp_len=1232))
+    monkeypatch.setattr(DNSRecord, "send", lambda self, *a, **k: upstream.pack())
+    for _ in range(2):
+        reply = DNSRecord.parse(resolver.handle(request, "10.0.0.1").pack())
+        assert reply.header.ar == 0
+        assert reply.ar == []
+        assert str(reply.rr[0].rdata) == "1.2.3.4"
 
 
 def test_negative_cache_nodata_with_soa(monkeypatch: pytest.MonkeyPatch) -> None:

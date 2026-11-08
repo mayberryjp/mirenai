@@ -40,6 +40,9 @@ from one policy table.
   subnets and it answers everyone, as before.
 - **Caching that stays out of the way** — in-memory, LRU, TTL-aware, thread-safe.
   Turn it off at runtime or flush it from the API.
+  Cached replies preserve EDNS control fields rather than aging them as TTLs.
+  Clients querying without EDNS (for example, `dig +noedns`) never receive an
+  unsolicited OPT record, including when sharing a cached answer with EDNS clients.
 - **Live configuration** — policies, upstreams, blocklists, and settings live in
   the database and are re-read on a timer. Change a rule and it takes effect in
   seconds, no restart.
